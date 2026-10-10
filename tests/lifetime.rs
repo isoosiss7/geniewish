@@ -61,6 +61,22 @@ fn mention_does_not_switch_but_an_address_routes_only_the_body() {
 }
 
 #[test]
+fn natural_speak_request_accepts_both_a_pause_and_a_followup() {
+    let switch = route("I want to speak to Allan...").unwrap();
+    assert_eq!(switch.target.as_deref(), Some("Allan"));
+    assert_eq!(switch.command, Command::Switch);
+    let compound = route(
+        "I want to speak to Allan, for the web page we're working on, use cold colors as the style",
+    )
+    .unwrap();
+    assert_eq!(compound.target.as_deref(), Some("Allan"));
+    assert_eq!(
+        compound.command,
+        Command::Message("for the web page we're working on, use cold colors as the style".into())
+    );
+}
+
+#[test]
 fn damaged_state_is_not_silently_replaced() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("state.json"), b"{broken").unwrap();

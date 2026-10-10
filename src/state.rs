@@ -48,6 +48,7 @@ impl Default for State {
 
 impl State {
     pub fn validate(&self) -> Result<()> {
+        ensure!(self.next_id > 0, "Invalid identity counter.");
         ensure!(
             self.version == 1,
             "Unsupported state version; do not reset your saved identities."

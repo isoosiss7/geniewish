@@ -5,10 +5,11 @@ pub const NAMES: &[(&str, &str)] = &[
     ("Annie", "Samantha"),
     ("Ben", "Fred"),
     ("Clara", "Karen"),
+    ("Allan", "Reed (English (US))"),
     ("Oscar", "Ralph"),
     ("Ruby", "Tessa"),
     ("Zoe", "Moira"),
-    ("Hugo", "Reed (English (US))"),
+    ("Hugo", "Eddy (English (US))"),
 ];
 
 pub fn name(input: &str) -> Result<&'static str> {
@@ -52,25 +53,34 @@ pub fn route(input: &str) -> Result<Routed> {
         bail!("Please say a command.");
     }
     let lower = text.to_ascii_lowercase();
-    for prefix in ["i want to talk to ", "talk to ", "switch to ", "back to "] {
+    let mut addressed = text;
+    let mut explicit = false;
+    for prefix in [
+        "i want to speak to ",
+        "i want to talk to ",
+        "speak to ",
+        "talk to ",
+        "switch to ",
+        "back to ",
+    ] {
         if lower.starts_with(prefix) {
-            return Ok(Routed {
-                target: Some(name(&text[prefix.len()..])?.into()),
-                command: Command::Switch,
-            });
+            addressed = &text[prefix.len()..];
+            explicit = true;
+            break;
         }
     }
+    let lower = addressed.to_ascii_lowercase();
     let mut target = None;
-    let mut body = text;
+    let mut body = addressed;
     for (n, _) in NAMES {
-        if text.eq_ignore_ascii_case(n) {
+        if addressed.eq_ignore_ascii_case(n) {
             return Ok(Routed {
                 target: Some((*n).into()),
                 command: Command::Switch,
             });
         }
         if lower.starts_with(&n.to_ascii_lowercase()) {
-            let rest = &text[n.len()..];
+            let rest = &addressed[n.len()..];
             let next = rest.trim_start_matches([',', ' ']);
             let verb = next
                 .split_whitespace()
@@ -83,12 +93,21 @@ pub fn route(input: &str) -> Result<Routed> {
                 "any", "yes",
             ]
             .contains(&verb.as_str());
-            if rest.starts_with(',') || (rest.starts_with(' ') && direct) {
+            if rest.starts_with(',') || (rest.starts_with(' ') && (direct || explicit)) {
                 target = Some((*n).into());
                 body = next;
                 break;
             }
         }
+    }
+    if explicit && target.is_none() {
+        bail!("Choose a genie name from your team; that address was not recognized.");
+    }
+    if body.is_empty() && target.is_some() {
+        return Ok(Routed {
+            target,
+            command: Command::Switch,
+        });
     }
     let body = body
         .strip_prefix("Please ")
