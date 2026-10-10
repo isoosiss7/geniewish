@@ -13,6 +13,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 struct Options {
     live: bool,
     check: bool,
+    playback: bool,
     executable: String,
     workspace: PathBuf,
     state: PathBuf,
@@ -22,6 +23,7 @@ fn options() -> Result<Option<Options>> {
     let mut options = Options {
         live: false,
         check: false,
+        playback: false,
         executable: "codex".into(),
         workspace: std::env::current_dir()?,
         state: ".geniewish".into(),
@@ -31,12 +33,13 @@ fn options() -> Result<Option<Options>> {
         match argument.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "geniewish\n\nOptions:\n  --live                 Connect to the installed Codex runtime\n  --check-runtime        Check the runtime protocol without creating a conversation\n  --codex PATH           Runtime executable (default: codex)\n  --workspace PATH       Workspace for new conversations\n  --state-dir PATH       Local metadata directory (default: .geniewish)\n\nInput: one command per line; output: JSON events. Type 'quit' to exit.\nFirst choose a manager name, e.g. Mike. Then:\n  Mike, hire Annie as my product manager\n  Annie, help me plan the landing page\n  Talk to Mike\n  Mike, any messages?\n  Read Annie's message\n  Mike, retire Annie\n  Yes, retire Annie\n\nThis is an early text client. Microphone input is not yet connected."
+                    "geniewish\n\nOptions:\n  --live                 Connect to the installed Codex runtime\n  --check-runtime        Check the runtime protocol without creating a conversation\n  --codex PATH           Runtime executable (default: codex)\n  --workspace PATH       Workspace for new conversations\n  --state-dir PATH       Local metadata directory (default: .geniewish)\n  --ack-delivery         Wait for speech playback acknowledgements (native client)\n\nInput: one command per line; output: JSON events. Type 'quit' to exit.\nFirst choose a manager name, e.g. Mike. Then:\n  Mike, hire Annie as my product manager\n  Annie, help me plan the landing page\n  Talk to Mike\n  Mike, any messages?\n  Read Annie's message\n  Mike, retire Annie\n  Yes, retire Annie\n\nThis is the text fallback. For the Mac voice window, run ./scripts/run-mac.sh."
                 );
                 return Ok(None);
             }
             "--live" => options.live = true,
             "--check-runtime" => options.check = true,
+            "--ack-delivery" => options.playback = true,
             "--codex" => options.executable = arguments.next().context("--codex needs a path.")?,
             "--workspace" => {
                 options.workspace = arguments
@@ -69,22 +72,44 @@ async fn main() -> Result<()> {
     let store = Store::open(&options.state)?;
     let mut state = store.load()?;
     let mut runtime = if options.live {
-        Some(Runtime::connect(&options.executable, options.workspace).await?)
+        let mut runtime = Runtime::connect(&options.executable, options.workspace).await?;
+        runtime.wait_for_playback = options.playback;
+        Some(runtime)
     } else {
         None
     };
     emit(
         json!({"type":"ready","live":options.live,"active":state.active.and_then(|id| state.get(id).ok().map(|g| &g.name)),"names":geniewish::router::NAMES.iter().map(|(name,_)| *name).collect::<Vec<_>>(),"text":if state.manager.is_none() {"Choose your HR manager's name."} else {"Your saved team is ready."}}),
     )?;
+    emit_team(&state)?;
     let mut input = BufReader::new(tokio::io::stdin()).lines();
     loop {
         tokio::select! {
             line = input.next_line() => {
-                let Some(line) = line? else {break;};
+                let Some(mut line) = line? else {break;};
                 if line == "quit" {break;}
+                if options.playback && line.starts_with('{') {
+                    let result = (|| -> Result<bool> {
+                        let message: serde_json::Value = serde_json::from_str(&line)?;
+                        if message["type"] == "input" {
+                            line = message["text"].as_str().context("Client input has no text.")?.to_owned();
+                            return Ok(false);
+                        }
+                        ensure!(message["type"] == "delivered", "Unknown client acknowledgement.");
+                        let delivery = serde_json::from_value(message["delivery"].clone())?;
+                        runtime.as_mut().context("No runtime is connected.")?.acknowledge_playback(&mut state, &store, delivery)?;
+                        Ok(true)
+                    })();
+                    match result {
+                        Ok(true) => continue,
+                        Ok(false) => {},
+                        Err(error) => {emit(json!({"type":"error","text":format!("{error:#}")}))?; continue;}
+                    }
+                }
                 if let Err(error) = handle(&mut state, &store, &mut runtime, &line).await {
                     emit(json!({"type":"error","text":format!("{error:#}")}))?;
                 }
+                emit_team(&state)?;
             }
             event = async {
                 match runtime.as_mut() {Some(runtime) => runtime.server.next_event().await, None => std::future::pending().await}
@@ -102,6 +127,12 @@ async fn main() -> Result<()> {
 fn reply(state: &State, text: String) -> Result<()> {
     let genie = state.current()?;
     emit(json!({"type":"reply","genie":genie.name,"voice":genie.voice,"text":text}))
+}
+
+fn emit_team(state: &State) -> Result<()> {
+    emit(
+        json!({"type":"team","active":state.active.and_then(|id| state.get(id).ok().map(|g| &g.name)),"genies":state.genies.iter().map(|g| json!({"name":g.name,"role":g.role,"voice":g.voice})).collect::<Vec<_>>()}),
+    )
 }
 
 async fn handle(
@@ -253,11 +284,14 @@ async fn handle(
                 .as_mut()
                 .context("Use --live to read the original saved message.")?;
             let (update, text) = runtime.read_update(state, &name).await?;
-            reply(state, format!("{name} says: {text}"))?;
-            change(state, store, |s| {
-                s.mark_read(&update.thread_id, &update.turn_id, &update.item_id)
-            })?;
-            Ok(())
+            let speaker = state.current()?.id;
+            runtime.reply_update(
+                state,
+                store,
+                &update,
+                speaker,
+                &format!("{name} says: {text}"),
+            )
         }
         Command::Approve(accept) => {
             runtime

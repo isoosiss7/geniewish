@@ -50,6 +50,8 @@ pub struct Routed {
 }
 
 pub fn route(input: &str) -> Result<Routed> {
+    let normalized = input.replace('’', "'");
+    let input = normalized.as_str();
     let text = input.trim().trim_end_matches(['.', '?', '!']).trim();
     let lower = text.to_ascii_lowercase();
     let text = ["hi ", "hello ", "hey "]
@@ -121,6 +123,17 @@ pub fn route(input: &str) -> Result<Routed> {
         .iter()
         .find(|prefix| lower.starts_with(**prefix))
         .map_or(body, |prefix| &body[prefix.len()..]);
+    let lower = body.to_ascii_lowercase();
+    let body = [
+        "can you please ",
+        "could you please ",
+        "can you ",
+        "could you ",
+        "would you ",
+    ]
+    .iter()
+    .find(|prefix| lower.starts_with(**prefix))
+    .map_or(body, |prefix| &body[prefix.len()..]);
     let lower = body.to_ascii_lowercase();
     let command = if let Some(rest) = lower.strip_prefix("hire ") {
         let (chosen, role) = match rest.find(" as ") {

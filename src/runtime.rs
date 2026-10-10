@@ -4,6 +4,7 @@ use crate::{
     storage::Store,
 };
 use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -17,6 +18,23 @@ struct Approval {
     turn: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct Delivery {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+}
+
+impl From<&Update> for Delivery {
+    fn from(update: &Update) -> Self {
+        Self {
+            thread_id: update.thread_id.clone(),
+            turn_id: update.turn_id.clone(),
+            item_id: update.item_id.clone(),
+        }
+    }
+}
+
 pub struct Runtime {
     pub server: AppServer,
     workspace: PathBuf,
@@ -24,6 +42,8 @@ pub struct Runtime {
     turns: HashMap<u64, String>,
     approvals: Vec<Approval>,
     final_messages: HashMap<u64, Value>,
+    pub wait_for_playback: bool,
+    deliveries: HashSet<Delivery>,
 }
 
 /// Commit local metadata before allowing the in-memory state to advance.
@@ -57,6 +77,8 @@ impl Runtime {
             turns: HashMap::new(),
             approvals: vec![],
             final_messages: HashMap::new(),
+            wait_for_playback: false,
+            deliveries: HashSet::new(),
         })
     }
 
@@ -226,6 +248,46 @@ impl Runtime {
         Ok((update, text))
     }
 
+    pub fn reply_update(
+        &mut self,
+        state: &mut State,
+        store: &Store,
+        update: &Update,
+        speaker: u64,
+        text: &str,
+    ) -> Result<()> {
+        let delivery = Delivery::from(update);
+        let genie = state.get(speaker)?;
+        emit(
+            json!({"type":"reply","genie":genie.name,"voice":genie.voice,"text":text,"delivery":if self.wait_for_playback {Some(&delivery)} else {None}}),
+        )?;
+        if self.wait_for_playback {
+            self.deliveries.insert(delivery);
+        } else {
+            change(state, store, |s| {
+                s.mark_read(&delivery.thread_id, &delivery.turn_id, &delivery.item_id)
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn acknowledge_playback(
+        &mut self,
+        state: &mut State,
+        store: &Store,
+        delivery: Delivery,
+    ) -> Result<()> {
+        ensure!(
+            self.wait_for_playback && self.deliveries.contains(&delivery),
+            "That playback acknowledgement was not issued by this client."
+        );
+        change(state, store, |s| {
+            s.mark_read(&delivery.thread_id, &delivery.turn_id, &delivery.item_id)
+        })?;
+        self.deliveries.remove(&delivery);
+        Ok(())
+    }
+
     pub async fn event(&mut self, state: &mut State, store: &Store, message: Value) -> Result<()> {
         // A late RPC response is not a server request, even when its id is no longer pending.
         if message.get("method").is_none() {
@@ -304,7 +366,13 @@ impl Runtime {
         Ok(())
     }
 
-    fn deliver(&self, state: &mut State, store: &Store, owner: u64, params: &Value) -> Result<()> {
+    fn deliver(
+        &mut self,
+        state: &mut State,
+        store: &Store,
+        owner: u64,
+        params: &Value,
+    ) -> Result<()> {
         let item = &params["item"];
         let text = item["text"].as_str().context("Message has no text.")?;
         let update = Update {
@@ -326,11 +394,7 @@ impl Runtime {
         if change(state, store, |s| s.record_update(update.clone()))? {
             let genie = state.get(owner)?;
             if state.active == Some(owner) {
-                emit(json!({"type":"reply","genie":genie.name,"text":text,"voice":genie.voice}))?;
-                // Text delivery is a successful flush. A speech client must acknowledge completed playback instead.
-                change(state, store, |s| {
-                    s.mark_read(&update.thread_id, &update.turn_id, &update.item_id)
-                })?;
+                self.reply_update(state, store, &update, owner, text)?;
             } else {
                 emit(json!({"type":"update","genie":genie.name,"unread":state.unread().count()}))?;
             }

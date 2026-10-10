@@ -15,7 +15,14 @@ struct Client {
 
 impl Client {
     fn open(directory: &Path, mode: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_geniewish"))
+        Self::open_playback(directory, mode, false)
+    }
+    fn open_playback(directory: &Path, mode: &str, playback: bool) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_geniewish"));
+        if playback {
+            command.arg("--ack-delivery");
+        }
+        let mut child = command
             .args(["--live", "--codex"])
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/app_server.py"))
             .arg("--state-dir")
@@ -293,5 +300,44 @@ fn greeting_hires_an_available_name_without_asking_for_a_role() {
             .as_str()
             .unwrap()
             .contains("none")
+    );
+}
+
+#[test]
+fn a_spoken_result_remains_unread_until_its_exact_playback_is_acknowledged() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open_playback(directory.path(), "", true);
+    client.team();
+    client.send("Annie, please reply");
+    let answer = client.until(|e| e["type"] == "reply" && e["delivery"].is_object());
+    client.until(|e| e["type"] == "completed");
+    assert_eq!(saved(directory.path())["inbox"][0]["read"], false);
+    // Interrupted playback sends no acknowledgement, so the manager can read it later.
+    client.reply("Talk to Mike");
+    let read = client.reply("Read Annie's message");
+    assert_eq!(read["delivery"], answer["delivery"]);
+    client.send(&serde_json::json!({"type":"delivered", "delivery":{"thread_id":"wrong-thread", "turn_id":"wrong-turn", "item_id":"wrong-item"}}).to_string());
+    client.until(|e| e["type"] == "error");
+    assert_eq!(saved(directory.path())["inbox"][0]["read"], false);
+    client.send(&serde_json::json!({"type":"delivered", "delivery":read["delivery"]}).to_string());
+    assert!(
+        client.reply("Mike, any messages?")["text"]
+            .as_str()
+            .unwrap()
+            .contains("0 unread")
+    );
+    assert_eq!(saved(directory.path())["inbox"][0]["read"], true);
+    // Frontend text is framed separately from acknowledgements, including literal JSON/code.
+    client.send(
+        &serde_json::json!({"type":"input", "text":"Annie, explain {\"enabled\":true}"})
+            .to_string(),
+    );
+    client.until(|e| e["type"] == "completed");
+    let history: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        history["inputs"][1]["input"][1]["text"],
+        "explain {\"enabled\":true}"
     );
 }
