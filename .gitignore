@@ -1,0 +1,7 @@
+/target/
+/.geniewish/
+.DS_Store
+.env
+.env.*
+*.aiff
+*.wav
