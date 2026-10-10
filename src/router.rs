@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 
 pub const NAMES: &[(&str, &str)] = &[
     ("Mike", "Daniel"),
+    ("Lucas", "Eddy (English (UK))"),
     ("Annie", "Samantha"),
     ("Ben", "Fred"),
     ("Clara", "Karen"),
@@ -28,7 +29,8 @@ pub fn name(input: &str) -> Result<&'static str> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Switch,
-    Hire { name: String, role: String },
+    Hire { name: Option<String>, role: String },
+    SetRole { name: String, role: String },
     Retire(String),
     ConfirmRetire(String),
     CancelRetirement,
@@ -49,6 +51,11 @@ pub struct Routed {
 
 pub fn route(input: &str) -> Result<Routed> {
     let text = input.trim().trim_end_matches(['.', '?', '!']).trim();
+    let lower = text.to_ascii_lowercase();
+    let text = ["hi ", "hello ", "hey "]
+        .iter()
+        .find(|prefix| lower.starts_with(**prefix))
+        .map_or(text, |prefix| &text[prefix.len()..]);
     if text.is_empty() {
         bail!("Please say a command.");
     }
@@ -90,7 +97,7 @@ pub fn route(input: &str) -> Result<Routed> {
             let direct = [
                 "please", "can", "could", "would", "build", "help", "explain", "approve", "deny",
                 "hire", "retire", "read", "what", "who", "tell", "stop", "cancel", "remember",
-                "any", "yes",
+                "any", "yes", "pls", "set", "change", "clear",
             ]
             .contains(&verb.as_str());
             if rest.starts_with(',') || (rest.starts_with(' ') && (direct || explicit)) {
@@ -109,26 +116,65 @@ pub fn route(input: &str) -> Result<Routed> {
             command: Command::Switch,
         });
     }
-    let body = body
-        .strip_prefix("Please ")
-        .or_else(|| body.strip_prefix("please "))
-        .unwrap_or(body);
+    let lower = body.to_ascii_lowercase();
+    let body = ["please ", "pls "]
+        .iter()
+        .find(|prefix| lower.starts_with(**prefix))
+        .map_or(body, |prefix| &body[prefix.len()..]);
     let lower = body.to_ascii_lowercase();
     let command = if let Some(rest) = lower.strip_prefix("hire ") {
-        let Some((chosen, _)) = rest.split_once(" as ") else {
-            bail!("Say 'hire Annie as my product manager'.");
+        let (chosen, role) = match rest.find(" as ") {
+            Some(split) => (
+                &rest[..split],
+                body[5 + split + 4..]
+                    .trim()
+                    .trim_start_matches("my ")
+                    .trim(),
+            ),
+            None => (rest, ""),
         };
-        let split = rest.find(" as ").expect("split was checked");
-        let role = body[5 + split + 4..]
-            .trim()
-            .trim_start_matches("my ")
-            .trim();
-        if role.is_empty() || role.len() > 1000 {
+        if role.len() > 1000 {
             bail!("Please give the genie a short role.");
         }
+        let chosen = chosen.trim().trim_end_matches(" for me").trim();
+        let unnamed = [
+            "a genie",
+            "a new genie",
+            "new genie",
+            "a genie for me",
+            "a new genie for me",
+        ]
+        .contains(&chosen);
+        let chosen = ["call her ", "call him ", "call them ", "call it ", "named "]
+            .iter()
+            .find_map(|prefix| chosen.split_once(prefix).map(|(_, name)| name))
+            .unwrap_or(chosen);
         Command::Hire {
-            name: name(chosen)?.into(),
+            name: if unnamed {
+                None
+            } else {
+                Some(name(chosen)?.into())
+            },
             role: role.into(),
+        }
+    } else if lower.starts_with("set ") || lower.starts_with("change ") {
+        let offset = if lower.starts_with("set ") { 4 } else { 7 };
+        if let Some(split) = lower[offset..].find("'s role to ") {
+            let role = body[offset + split + 11..]
+                .trim()
+                .trim_start_matches("my ")
+                .trim();
+            Command::SetRole {
+                name: name(&body[offset..offset + split])?.into(),
+                role: role.into(),
+            }
+        } else {
+            Command::Message(body.into())
+        }
+    } else if lower.starts_with("clear ") && lower.ends_with("'s role") {
+        Command::SetRole {
+            name: name(&body[6..body.len() - 7])?.into(),
+            role: String::new(),
         }
     } else if let Some(rest) = lower
         .strip_prefix("yes, retire ")

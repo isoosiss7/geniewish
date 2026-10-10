@@ -65,7 +65,7 @@ impl State {
                 name(&g.name)? == g.name && names.insert(&g.name),
                 "Invalid or duplicate name."
             );
-            ensure!(!g.role.trim().is_empty(), "Missing genie role.");
+            ensure!(g.role.len() <= 1000, "Genie role is too long.");
             if let Some(thread) = &g.thread_id {
                 ensure!(
                     !thread.is_empty() && threads.insert(thread),
@@ -121,7 +121,7 @@ impl State {
 
     pub fn hire(&mut self, chosen: &str, role: &str) -> Result<u64> {
         let chosen = name(chosen)?;
-        ensure!(!role.trim().is_empty(), "A role is required.");
+        ensure!(role.len() <= 1000, "Please give the genie a short role.");
         ensure!(
             !self.genies.iter().any(|g| g.name == chosen),
             "{chosen} is already hired."
@@ -139,7 +139,7 @@ impl State {
         self.genies.push(Genie {
             id,
             name: chosen.into(),
-            role: role.into(),
+            role: role.trim().into(),
             voice: voice.into(),
             thread_id: None,
         });
@@ -148,6 +148,19 @@ impl State {
             self.active = Some(id);
         }
         Ok(id)
+    }
+
+    pub fn set_role(&mut self, chosen: &str, role: &str) -> Result<()> {
+        self.require_manager()?;
+        ensure!(role.len() <= 1000, "Please give the genie a short role.");
+        let id = self.named(chosen)?.id;
+        ensure!(Some(id) != self.manager, "The manager keeps its HR role.");
+        self.genies
+            .iter_mut()
+            .find(|g| g.id == id)
+            .context("Genie no longer exists.")?
+            .role = role.trim().into();
+        Ok(())
     }
 
     pub fn bind_thread(&mut self, id: u64, thread: &str) -> Result<()> {

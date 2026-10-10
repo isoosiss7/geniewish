@@ -88,7 +88,7 @@ impl Runtime {
         let response = self.server.call("thread/start", json!({
             "cwd":self.workspace,"ephemeral":false,"approvalPolicy":"on-request","sandbox":"workspace-write",
             "config":{"memories.use_memories":false,"memories.generate_memories":false},
-            "developerInstructions":format!("Your name is {}. Your role is {}. Refer to the user as {}. Keep spoken replies concise. This is your ongoing conversation. Use your available tools for work. Roster and speaker changes are handled by the client. Do not provide intermediate progress messages; give your result when the work finishes.", genie.name, genie.role, crate::HUMAN_NAME)
+            "developerInstructions":format!("Your name is {}. Refer to the user as {}. Human's current role assignment accompanies each message; it can change or be blank. A blank role means no specialized role was assigned. Keep spoken replies concise. This is your ongoing conversation. Use your available tools for work. Roster and speaker changes are handled by the client. Do not claim to hire or retire genies: those operations belong to the client. Do not provide intermediate progress messages; give your result when the work finishes.", genie.name, crate::HUMAN_NAME)
         })).await?;
         let thread = response["thread"]["id"]
             .as_str()
@@ -116,8 +116,16 @@ impl Runtime {
     pub async fn submit(&mut self, state: &mut State, store: &Store, text: &str) -> Result<bool> {
         let owner = state.current()?.id;
         let thread = self.ensure_thread(state, store, owner).await?;
+        let role = &state.get(owner)?.role;
+        let input = json!([{ "type":"text", "text":format!("Human's current role assignment for you: {}.", if role.is_empty() {"none"} else {role}) }, {"type":"text","text":text}]);
         if let Some(turn) = self.turns.get(&owner).cloned() {
-            let response = self.server.call("turn/steer", json!({"threadId":thread,"expectedTurnId":turn,"input":[{"type":"text","text":text}]})).await?;
+            let response = self
+                .server
+                .call(
+                    "turn/steer",
+                    json!({"threadId":thread,"expectedTurnId":turn,"input":input}),
+                )
+                .await?;
             ensure!(
                 response["turnId"].as_str() == Some(&turn),
                 "The steering acknowledgement did not match the active turn."
@@ -126,10 +134,7 @@ impl Runtime {
         }
         let response = self
             .server
-            .call(
-                "turn/start",
-                json!({"threadId":thread,"input":[{"type":"text","text":text}]}),
-            )
+            .call("turn/start", json!({"threadId":thread,"input":input}))
             .await?;
         let turn = response["turn"]["id"]
             .as_str()

@@ -72,14 +72,16 @@ for line in sys.stdin:
         thread = params['threadId']
         turn = params['expectedTurnId']
         assert (thread, turn) in pending.values(), 'Steering must target the existing active turn.'
-        state['threads'][thread]['steered'] = params['input'][0]['text']
+        state['threads'][thread]['steered'] = params['input'][-1]['text']
         state.setdefault('steers', []).append(params)
         save()
         result = {'turnId': turn}
     elif method == 'turn/start':
         thread = params['threadId']
         turn = 'turn-' + str(len(state['threads'][thread]['turns']) + 1)
-        text = params['input'][0]['text']
+        text = params['input'][-1]['text']
+        state.setdefault('inputs', []).append(params)
+        save()
         result = {'turn': {'id': turn, 'items': [], 'status': 'inProgress'}}
         send({'method': 'turn/started', 'params': {'threadId': thread, 'turn': result['turn']}})
         if text == 'needs approval':

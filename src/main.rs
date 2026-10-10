@@ -113,7 +113,7 @@ async fn handle(
     let routed = route(input)?;
     if state.manager.is_none() {
         ensure!(
-            routed.command == Command::Switch,
+            routed.target.is_some(),
             "Choose a manager name first, for example Mike."
         );
         let chosen = routed
@@ -121,10 +121,12 @@ async fn handle(
             .as_deref()
             .context("A manager name is required.")?;
         change(state, store, |s| s.hire(chosen, "HR manager"))?;
-        return reply(
-            state,
-            format!("{chosen} here. I am your HR manager, Human."),
-        );
+        if routed.command == Command::Switch {
+            return reply(
+                state,
+                format!("{chosen} here. I am your HR manager, Human."),
+            );
+        }
     }
     if let Some(name) = &routed.target {
         change(state, store, |s| s.switch(name))?;
@@ -149,8 +151,34 @@ async fn handle(
         }
         Command::Hire { name, role } => {
             state.require_manager()?;
+            let name = name
+                .or_else(|| {
+                    geniewish::router::NAMES
+                        .iter()
+                        .find(|(name, _)| state.named(name).is_err())
+                        .map(|(name, _)| (*name).to_owned())
+                })
+                .context("All names are in use. Retire a genie to free a name.")?;
             change(state, store, |s| s.hire(&name, &role))?;
-            reply(state, format!("{name} is ready as your {role}."))
+            reply(
+                state,
+                if role.is_empty() {
+                    format!("We hired {name}, Human.")
+                } else {
+                    format!("We hired {name} as your {role}, Human.")
+                },
+            )
+        }
+        Command::SetRole { name, role } => {
+            change(state, store, |s| s.set_role(&name, &role))?;
+            reply(
+                state,
+                if role.is_empty() {
+                    format!("{name}'s role is now blank, Human.")
+                } else {
+                    format!("{name}'s role is now {role}, Human.")
+                },
+            )
         }
         Command::Retire(name) => {
             change(state, store, |s| s.request_retirement(&name))?;
@@ -189,7 +217,13 @@ async fn handle(
             state
                 .genies
                 .iter()
-                .map(|g| format!("{}: {}", g.name, g.role))
+                .map(|g| {
+                    if g.role.is_empty() {
+                        g.name.clone()
+                    } else {
+                        format!("{}: {}", g.name, g.role)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("; "),
         ),

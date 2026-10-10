@@ -24,7 +24,9 @@ Enter one command per line. Start by choosing the HR manager's name:
 
 ```text
 Mike
-Mike, hire Allan as my engineer
+Mike, hire a new genie
+Mike, hire Allan
+Mike, set Allan's role to my engineer
 Allan, help me plan the web page
 Talk to Mike
 I want to speak to Allan
@@ -35,6 +37,8 @@ Mike, retire Allan
 Yes, retire Allan
 quit
 ```
+
+Roles are optional and stay blank until assigned. The manager picks an available name when none is given; a chosen name must be in the catalog. Roles can be updated or cleared later (`Mike, clear Allan's role`) in the same lifetime conversation.
 
 Switching resumes the same conversation. A follow-up to a busy genie steers its active work and receives a short acknowledgement. Results arrive after the turn completes.
 

@@ -124,3 +124,23 @@ fn threads_cannot_be_shared_between_identities() {
     state.bind_thread(annie, "a-thread").unwrap();
     assert!(state.bind_thread(mike, "a-thread").is_err());
 }
+
+#[test]
+fn blank_roles_can_be_set_and_cleared_without_replacing_the_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = State::default();
+    state.hire("Mike", "HR manager").unwrap();
+    let id = state.hire("Lucas", "").unwrap();
+    state.bind_thread(id, "lucas-lifetime").unwrap();
+    state.set_role("Lucas", "product manager").unwrap();
+    state.set_role("Lucas", "").unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.save(&state).unwrap();
+    let restored = store.load().unwrap();
+    assert_eq!(restored.named("Lucas").unwrap().role, "");
+    assert_eq!(restored.named("Lucas").unwrap().id, id);
+    assert_eq!(
+        restored.named("Lucas").unwrap().thread_id.as_deref(),
+        Some("lucas-lifetime")
+    );
+}

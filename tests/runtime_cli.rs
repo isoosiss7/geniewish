@@ -226,7 +226,7 @@ fn busy_genie_acknowledges_and_steers_the_same_turn() {
         history["steers"][1]["expectedTurnId"]
     );
     assert!(
-        history["steers"][0]["input"][0]["text"]
+        history["steers"][0]["input"][1]["text"]
             .as_str()
             .unwrap()
             .contains("cold colors")
@@ -257,5 +257,41 @@ fn intermediate_progress_is_not_returned_to_the_human() {
     assert_eq!(
         *replies.borrow(),
         vec![Value::String("fixture reply".into())]
+    );
+}
+
+#[test]
+fn greeting_hires_an_available_name_without_asking_for_a_role() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    let hired = client.reply("Hi Mike, pls hire a Genie for me");
+    assert_eq!(hired["text"], "We hired Lucas, Human.");
+    assert_eq!(saved(directory.path())["genies"][1]["role"], "");
+    assert_eq!(
+        client.reply("Hi pls hire a new Genie for me")["text"],
+        "We hired Annie, Human."
+    );
+    client.reply("Mike, set Lucas's role to my product manager");
+    client.send("Lucas, please reply");
+    client.until(|e| e["type"] == "completed");
+    let thread = saved(directory.path())["genies"][1]["thread_id"].clone();
+    client.reply("Mike, clear Lucas's role");
+    client.send("Lucas, please reply");
+    client.until(|e| e["type"] == "completed");
+    assert_eq!(saved(directory.path())["genies"][1]["thread_id"], thread);
+    let history: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
+            .unwrap();
+    assert!(
+        history["inputs"][0]["input"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("product manager")
+    );
+    assert!(
+        history["inputs"][1]["input"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("none")
     );
 }
