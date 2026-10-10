@@ -341,3 +341,22 @@ fn a_spoken_result_remains_unread_until_its_exact_playback_is_acknowledged() {
         "explain {\"enabled\":true}"
     );
 }
+
+#[test]
+fn invalid_interpretation_does_not_forward_work_or_replace_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    client.team();
+    let before = saved(directory.path());
+    client.send("unrouteable destination");
+    client.until(|e| e["type"] == "error");
+    assert_eq!(saved(directory.path()), before);
+    let history: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
+            .unwrap();
+    assert!(history.get("inputs").is_none());
+    assert!(
+        history["threads"].as_object().unwrap().is_empty(),
+        "ephemeral interpreter threads are released"
+    );
+}

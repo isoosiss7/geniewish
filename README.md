@@ -14,7 +14,11 @@ Requires Rust 1.93+ and Xcode Command Line Tools. Install the Codex CLI and sign
 
 Click **Start listening** and allow macOS microphone and speech recognition permissions. Use headphones: this preview keeps listening while a genie speaks, so it can hear interruptions and switches. Speaker echo cancellation is not implemented.
 
-Say a command and pause for about a second to send it:
+Speak naturally and pause for about a second to send the phrase. Microphone capture stays on between phrases; there is no need to press Stop. Recognition retries automatically after recoverable errors.
+
+An LLM interprets every voice or text input, chooses a genie or team action, and decides what reaches the work runtime. It receives the current roster/status and input, without loading genie histories. Uncertain destinations get a short clarification. Rust validates names, lifetime identities, approvals, and retirement confirmations.
+
+Examples:
 
 ```text
 Hi Mike, please hire a new genie
@@ -25,7 +29,7 @@ Mike, any messages?
 Read Lucas's message
 ```
 
-Mike picks an available name; it may differ from Lucas on an existing team. Spoken replies use each genie's assigned installed Mac voice. Background results play a quiet chime. Saying **stop talking** interrupts playback; **pause listening** turns off the microphone until you click Start listening again. Neither command cancels work. A stopped result remains unread.
+Mike picks an available name; it may differ from Lucas on an existing team. Spoken replies use each genie's assigned installed Mac voice. Background results play a quiet chime. Asking a genie to stop talking interrupts playback. The Pause listening button is an optional microphone privacy control; Start listening resumes it. Neither command cancels work. A stopped result remains unread.
 
 The app uses on-device English recognition and refuses cloud fallback. Audio is not saved. Conversation text stays with the work runtime. The window shows this session's exchanges; the same saved lifetime conversations continue across restarts.
 
@@ -35,7 +39,7 @@ It uses the repository's existing `.geniewish` state. To choose another workspac
 ./scripts/run-mac.sh --workspace /path/to/project --state-dir /path/to/team
 ```
 
-This is an early voice preview. Real microphone accuracy, pronunciation, echo, and timing need user trials. Natural commands currently cover the documented phrases; arbitrary wording may need rephrasing. Diagnostics never activate the microphone:
+This is an early voice preview. Real microphone accuracy, pronunciation, echo, and timing need user trials. The examples are not required keywords. Interpretation adds a model call per phrase; wording and speech errors may still need clarification. Diagnostics never activate the microphone:
 
 ```sh
 ./scripts/run-mac.sh --diagnose
@@ -65,7 +69,7 @@ cargo run -- --help
 
 Requires Rust 1.93 or newer. Protocol tests also use `python3`.
 
-The text client remains a supported fallback. It and the native window's text field use the same Rust command handling as recognized speech. `cargo test` verifies routing, lifetime conversations, and delivery without a microphone. `--self-test` checks speech endpointing separately; actual recognition and interruption quality require microphone trials.
+The text client remains a supported fallback. It and the native window's text field use the same Rust command handling as recognized speech. `cargo test` verifies routing, lifetime conversations, and delivery without a microphone. `--self-test` checks speech endpointing separately; actual recognition and interruption quality require microphone trials. The runtime protocol tests use canned interpretation decisions and do not evaluate model quality; separate live text trials exercise the real interpreter.
 
 For live work, install the Codex CLI and sign in, then run:
 
@@ -74,7 +78,7 @@ cargo run -- --check-runtime
 cargo run -- --live --workspace /path/to/your/project
 ```
 
-Enter one command per line. Start by choosing the HR manager's name:
+Enter one command per line. Natural input requires `--live`. Start by choosing the HR manager's name:
 
 ```text
 Mike

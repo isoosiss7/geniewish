@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use geniewish::{
     app_server::AppServer,
-    router::{Command, route},
+    router::Command,
     runtime::{Runtime, change, emit},
     state::State,
     storage::Store,
@@ -37,7 +37,7 @@ fn options() -> Result<Option<Options>> {
         match argument.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "geniewish\n\nOptions:\n  --live                 Connect to the installed Codex runtime\n  --check-runtime        Check the runtime protocol without creating a conversation\n  --codex PATH           Runtime executable (default: codex)\n  --workspace PATH       Workspace for new conversations\n  --state-dir PATH       Local metadata directory (default: .geniewish)\n  --ack-delivery         Wait for speech playback acknowledgements (native client)\n\nInput: one command per line; output: JSON events. Type 'quit' to exit.\nFirst choose a manager name, e.g. Mike. Then:\n  Mike, hire Annie as my product manager\n  Annie, help me plan the landing page\n  Talk to Mike\n  Mike, any messages?\n  Read Annie's message\n  Mike, retire Annie\n  Yes, retire Annie\n\nThis is the text fallback. For the Mac voice window, run ./scripts/run-mac.sh."
+                    "geniewish\n\nOptions:\n  --live                 Connect to the installed Codex runtime\n  --check-runtime        Check the runtime protocol without creating a conversation\n  --codex PATH           Runtime executable (default: codex)\n  --workspace PATH       Workspace for new conversations\n  --state-dir PATH       Local metadata directory (default: .geniewish)\n  --ack-delivery         Wait for speech playback acknowledgements (native client)\n  --debug-transcripts    Include input/decision text in local diagnostics\n  --log-dir PATH         Log directory (default: .geniewish/logs)\n\nNatural input is interpreted by an LLM with --live. Input: one phrase per line; output: JSON events. Type 'quit' to exit.\nFirst choose a manager name, e.g. Mike. Then:\n  Mike, hire Annie as my product manager\n  Annie, help me plan the landing page\n  Talk to Mike\n  Mike, any messages?\n  Read Annie's message\n  Mike, retire Annie\n  Yes, retire Annie\n\nThis is the text fallback. For the Mac voice window, run ./scripts/run-mac.sh."
                 );
                 return Ok(None);
             }
@@ -133,9 +133,14 @@ async fn run(options: Options) -> Result<()> {
                     }
                 }
                 geniewish::diagnostics::text("input", &line);
-                if let Err(error) = handle(&mut state, &store, &mut runtime, &line).await {
-                    geniewish::diagnostics::text("command_error", &format!("{error:#}"));
-                    emit(json!({"type":"error","text":format!("{error:#}")}))?;
+                match handle(&mut state, &store, &mut runtime, &line).await {
+                    Ok(true) => break,
+                    Ok(false) => {},
+                    Err(error) => {
+                        if error.downcast_ref::<geniewish::interpreter::WorkEventFailure>().is_some() { return Err(error); }
+                        geniewish::diagnostics::text("command_error", &format!("{error:#}"));
+                        emit(json!({"type":"error","text":format!("{error:#}")}))?;
+                    }
                 }
                 emit_team(&state)?;
             }
@@ -153,8 +158,12 @@ async fn run(options: Options) -> Result<()> {
 }
 
 fn reply(state: &State, text: String) -> Result<()> {
-    let genie = state.current()?;
-    emit(json!({"type":"reply","genie":genie.name,"voice":genie.voice,"text":text}))
+    match state.current() {
+        Ok(genie) => {
+            emit(json!({"type":"reply","genie":genie.name,"voice":genie.voice,"text":text}))
+        }
+        Err(_) => emit(json!({"type":"reply","genie":"geniewish","voice":"Daniel","text":text})),
+    }
 }
 
 fn emit_team(state: &State) -> Result<()> {
@@ -168,8 +177,27 @@ async fn handle(
     store: &Store,
     runtime: &mut Option<Runtime>,
     input: &str,
-) -> Result<()> {
-    let routed = route(input)?;
+) -> Result<bool> {
+    let routed = runtime
+        .as_mut()
+        .context("Use --live for natural input interpretation.")?
+        .interpret(state, store, input)
+        .await?;
+    if let Command::Clarify(text) = &routed.command {
+        return reply(state, text.clone()).map(|_| false);
+    }
+    if routed.command == Command::Exit {
+        emit(json!({"type":"quit"}))?;
+        return Ok(true);
+    }
+    if routed.command == Command::ShowLogs {
+        emit(json!({"type":"open_logs"}))?;
+        return Ok(false);
+    }
+    if routed.command == Command::StopSpeech {
+        emit(json!({"type":"stop_speech"}))?;
+        return Ok(false);
+    }
     geniewish::diagnostics::record(
         "route",
         json!({"target":routed.target,"action":match &routed.command {Command::Message(_)=>"message", Command::Hire{..}=>"hire", Command::Switch=>"switch", _=>"control"}}),
@@ -188,13 +216,14 @@ async fn handle(
             return reply(
                 state,
                 format!("{chosen} here. I am your HR manager, Human."),
-            );
+            )
+            .map(|_| false);
         }
     }
     if let Some(name) = &routed.target {
         change(state, store, |s| s.switch(name))?;
     }
-    match routed.command {
+    let result = match routed.command {
         Command::Switch => {
             let current = state.current()?.clone();
             if current.thread_id.is_some()
@@ -344,7 +373,9 @@ async fn handle(
                 .await?;
             reply(state, "Cancellation requested.".into())
         }
-        Command::StopSpeech => emit(json!({"type":"stop_speech"})),
+        Command::Clarify(_) | Command::Exit | Command::StopSpeech | Command::ShowLogs => {
+            unreachable!("Handled before changing the foreground")
+        }
         Command::Message(text) => {
             let runtime = runtime
                 .as_mut()
@@ -358,5 +389,6 @@ async fn handle(
                 Ok(())
             }
         }
-    }
+    };
+    result.map(|_| false)
 }

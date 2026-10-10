@@ -1,5 +1,6 @@
 use geniewish::{
-    router::{Command, route},
+    interpreter::Decision,
+    router::Command,
     state::{State, Update},
     storage::Store,
 };
@@ -48,31 +49,43 @@ fn retirement_reuses_a_name_with_a_fresh_identity() {
 }
 
 #[test]
-fn mention_does_not_switch_but_an_address_routes_only_the_body() {
-    assert_eq!(route("Explain Annie's role").unwrap().target, None);
-    assert_eq!(route("Annie is my product manager").unwrap().target, None);
-    let routed = route("Annie, build the landing page").unwrap();
-    assert_eq!(routed.target.as_deref(), Some("Annie"));
+fn validated_work_preserves_the_original_input_and_rejects_invented_names() {
+    let mut decision: Decision = serde_json::from_value(
+        serde_json::json!({"action":"message","target":null,"name":null,"role":"","text":""}),
+    )
+    .unwrap();
+    let text = "Explain Annie's role and keep the quoted code exactly";
     assert_eq!(
-        routed.command,
-        Command::Message("build the landing page".into())
+        decision.routed(text, &team()).unwrap().command,
+        Command::Message(text.into())
     );
-    assert!(route("Talk to Brian").is_err());
+    decision = serde_json::from_value(
+        serde_json::json!({"action":"switch","target":"Brian","name":null,"role":"","text":""}),
+    )
+    .unwrap();
+    assert!(decision.routed("Talk to Brian", &team()).is_err());
 }
 
 #[test]
-fn natural_speak_request_accepts_both_a_pause_and_a_followup() {
-    let switch = route("I want to speak to Allan...").unwrap();
-    assert_eq!(switch.target.as_deref(), Some("Allan"));
-    assert_eq!(switch.command, Command::Switch);
-    let compound = route(
-        "I want to speak to Allan, for the web page we're working on, use cold colors as the style",
-    )
-    .unwrap();
-    assert_eq!(compound.target.as_deref(), Some("Allan"));
+fn interpretation_cannot_confirm_retirement_without_an_explicit_name() {
+    let mut state = team();
+    state.request_retirement("Annie").unwrap();
+    let decision = || {
+        serde_json::from_value::<Decision>(serde_json::json!({"action":"confirm_retire","target":"Mike","name":"Annie","role":"","text":""})).unwrap()
+    };
+    assert!(decision().routed("yes", &state).is_err());
+    assert!(decision().routed("Do not retire Annie", &state).is_err());
+    assert!(
+        decision()
+            .routed("Yes, do not retire Annie", &state)
+            .is_err()
+    );
     assert_eq!(
-        compound.command,
-        Command::Message("for the web page we're working on, use cold colors as the style".into())
+        decision()
+            .routed("Yes, retire Annie", &state)
+            .unwrap()
+            .command,
+        Command::ConfirmRetire("Annie".into())
     );
 }
 

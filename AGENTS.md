@@ -5,12 +5,14 @@
 - Use lowercase `geniewish` in user-facing text.
 - Each genie has one conversation for its entire lifetime. Switching resumes it.
 - Never silently replace a saved conversation when reconnecting fails.
-- Route a command before sending its text to a conversation.
+- Use an LLM to interpret natural input before sending anything to a genie conversation. Keep routing context small; validate the structured decision in Rust.
+- Clarify uncertain intent or names; never silently fall back to sending an unparsed input as work.
 - Switching speakers does not cancel background work.
 - Roles are optional. An omitted role stays blank; role edits preserve the identity and thread.
 - The manager selects an available catalog name when Human omits one.
 - Keep the text client as a fallback. Voice and text must use the same Rust command and state logic.
-- Test routing/lifecycle without a microphone; test speech capture/playback separately.
+- Test routing/lifecycle through text without a microphone; test speech capture/playback separately.
+- Capture stays on between utterances; detect an end from a short pause and renew recognition independently.
 - Keep credentials, local state, transcripts, private design notes, and strategic rationale out of this public repository and its Git history.
 - Do not change the user's global Git, authentication, or runtime configuration.
 - Run formatting, relevant tests, and lint checks for behavioral changes.

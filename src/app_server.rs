@@ -66,7 +66,10 @@ impl AppServer {
             .context("The work runtime disconnected. Saved conversations were not reset.")?;
         let value: Value =
             serde_json::from_str(&line).context("The runtime returned invalid JSON.")?;
-        if value.get("method").is_some() {
+        if value["method"]
+            .as_str()
+            .is_some_and(|method| !method.ends_with("/delta"))
+        {
             crate::diagnostics::record(
                 "runtime.event",
                 json!({"method":value["method"],"request":value.get("id").is_some(),"thread":value["params"]["threadId"],"turn":value["params"]["turnId"]}),
@@ -89,7 +92,7 @@ impl AppServer {
         crate::diagnostics::record("runtime.rpc_start", json!({"method":method,"id":id}));
         self.send(json!({"id":id,"method":method,"params":params}))
             .await?;
-        let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let pending = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let message = self.read().await?;
                 if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
@@ -108,8 +111,11 @@ impl AppServer {
                 self.deferred.push_back(message);
             }
         })
-        .await
-        .context(
+        .await;
+        if pending.is_err() {
+            crate::diagnostics::record("runtime.rpc_timeout", json!({"method":method,"id":id}));
+        }
+        let result = pending.context(
             "Runtime request timed out. It may have taken effect; do not automatically replay it.",
         )?;
         crate::diagnostics::record(

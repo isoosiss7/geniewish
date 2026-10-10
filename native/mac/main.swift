@@ -36,6 +36,25 @@ if CommandLine.arguments.contains("--self-test") {
     check(buffer.take(at: now.addingTimeInterval(3)) == nil, "an utterance is sent once")
     buffer.update("Stop talking", at: now)
     check(buffer.take(at: now, final: true) == "Stop talking", "final recognition commits immediately")
+    buffer.update("Keep every requirement", at: now)
+    check(buffer.take(at:now.addingTimeInterval(1.5),lastVoiceAt:now.addingTimeInterval(1.4)) == nil, "ongoing audio prevents premature submission when text is unchanged")
+    check(buffer.take(at:now.addingTimeInterval(2.5),lastVoiceAt:now.addingTimeInterval(1.4)) == "Keep every requirement", "a real silence ends the phrase")
+    var transcript = ContinuousTranscript()
+    check(transcript.text([WordSpan(text:"first",end:0.5)]) == "first", "first utterance is recognized")
+    transcript.commit(at:1.5)
+    check(transcript.text([WordSpan(text:"revised-first",end:0.6),WordSpan(text:"next",end:2.5)]) == "next", "old cumulative words are not submitted twice")
+    transcript.renew(carrying:"unfinished phrase")
+    check(transcript.text([WordSpan(text:"continued",end:0.4)]) == "unfinished phrase continued", "recognizer renewal preserves an unfinished utterance")
+    let feed = AudioFeed()
+    let format = AVAudioFormat(standardFormatWithSampleRate:16000,channels:1)!
+    let audio = AVAudioPCMBuffer(pcmFormat:format,frameCapacity:160)!
+    audio.frameLength = 160
+    for index in 0..<160 { audio.floatChannelData![0][index] = 0 }
+    feed.append(audio)
+    check(feed.snapshot().voicedAt == .distantPast, "silence does not count as speaking")
+    for index in 0..<160 { audio.floatChannelData![0][index] = 0.1 }
+    feed.append(audio)
+    check(feed.snapshot().voicedAt > now, "voiced audio updates the pause clock")
     print("Utterance checks passed")
     do {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("geniewish-log-test-" + UUID().uuidString)
@@ -293,6 +312,8 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
             append("geniewish", text)
             speaker.enqueue(["text": text, "voice": "Daniel"])
         case "stop_speech": speaker.stop()
+        case "open_logs": openLogs()
+        case "quit": NSApp.terminate(nil)
         case "unsupported_request": append("geniewish", "This runtime question is not supported yet.")
         default: break
         }
@@ -325,13 +346,6 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Diagnostics.shared?.text("input", text, fields: ["source":source,"active":active ?? "none"])
         guard ready else { append("geniewish", "Wait for your team to connect before sending a command."); return }
         speaker.stop()
-        let normalized = text.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines))
-        if ["pause listening", "stop listening", "pause microphone"].contains(normalized) {
-            microphone.stop()
-            speaker.enqueue(["text": "Microphone paused, Human.", "voice": "Daniel"])
-            return
-        }
-        if ["quit", "quit geniewish"].contains(normalized) { NSApp.terminate(nil); return }
         append("Human", text)
         sendJSON(["type": "input", "text": text, "source":source])
     }

@@ -10,8 +10,10 @@ printf '%s\n' "$geniewish_root" > "$geniewish_bundle/Contents/Resources/workspac
 git rev-parse --short HEAD > "$geniewish_bundle/Contents/Resources/build.txt"
 cp native/mac/Info.plist "$geniewish_bundle/Contents/Info.plist"
 xcrun swiftc -swift-version 5 -warnings-as-errors native/mac/Diagnostics.swift native/mac/Voice.swift native/mac/main.swift \
-    -o "$geniewish_bundle/Contents/MacOS/geniewish-mac"
-cp target/debug/geniewish "$geniewish_bundle/Contents/MacOS/geniewish-core"
+    -o "$geniewish_bundle/Contents/MacOS/.geniewish-mac.next"
+mv "$geniewish_bundle/Contents/MacOS/.geniewish-mac.next" "$geniewish_bundle/Contents/MacOS/geniewish-mac"
+cp target/debug/geniewish "$geniewish_bundle/Contents/MacOS/.geniewish-core.next"
+mv "$geniewish_bundle/Contents/MacOS/.geniewish-core.next" "$geniewish_bundle/Contents/MacOS/geniewish-core"
 codesign --force --sign - --identifier org.geniewish.mac "$geniewish_bundle"
 
 case "${1:-}" in

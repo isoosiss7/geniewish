@@ -44,6 +44,8 @@ pub struct Runtime {
     final_messages: HashMap<u64, Value>,
     pub wait_for_playback: bool,
     deliveries: HashSet<Delivery>,
+    pub(crate) routing_config: Option<Value>,
+    pub(crate) routing_clarification: Option<String>,
 }
 
 /// Commit local metadata before allowing the in-memory state to advance.
@@ -83,6 +85,8 @@ impl Runtime {
             final_messages: HashMap::new(),
             wait_for_playback: false,
             deliveries: HashSet::new(),
+            routing_config: None,
+            routing_clarification: None,
         })
     }
 
@@ -137,10 +141,18 @@ impl Runtime {
     pub fn busy(&self, owner: u64) -> bool {
         self.turns.contains_key(&owner)
     }
+    pub(crate) fn approval_count(&self, owner: u64) -> usize {
+        self.approvals.iter().filter(|a| a.owner == owner).count()
+    }
 
     /// Returns true when the message steered the existing turn.
     pub async fn submit(&mut self, state: &mut State, store: &Store, text: &str) -> Result<bool> {
         let owner = state.current()?.id;
+        crate::diagnostics::record(
+            "work.destination",
+            json!({"genie":state.get(owner)?.name,"busy":self.busy(owner)}),
+        );
+        crate::diagnostics::text("work.input", text);
         let thread = self.ensure_thread(state, store, owner).await?;
         let role = &state.get(owner)?.role;
         let input = json!([{ "type":"text", "text":format!("Human's current role assignment for you: {}.", if role.is_empty() {"none"} else {role}) }, {"type":"text","text":text}]);
