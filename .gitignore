@@ -5,3 +5,5 @@
 .env.*
 *.aiff
 *.wav
+*.jsonl
+*.jsonl.*

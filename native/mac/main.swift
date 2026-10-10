@@ -7,8 +7,8 @@ func argument(_ name: String) -> String? {
     return CommandLine.arguments[index + 1]
 }
 
-func check(_ condition: @autoclosure () -> Bool, _ text: String) {
-    if !condition() { fputs("Failed: \(text)\n", stderr); exit(1) }
+func check(_ condition: Bool, _ text: String) {
+    if !condition { fputs("Failed: \(text)\n", stderr); exit(1) }
 }
 
 if CommandLine.arguments.contains("--diagnose") {
@@ -37,6 +37,27 @@ if CommandLine.arguments.contains("--self-test") {
     buffer.update("Stop talking", at: now)
     check(buffer.take(at: now, final: true) == "Stop talking", "final recognition commits immediately")
     print("Utterance checks passed")
+    do {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("geniewish-log-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let logger = try Diagnostics(directory: directory, transcripts: false)
+        logger.text("input", "not-for-the-log")
+        let file = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first!
+        check(!(try String(contentsOf: file, encoding: .utf8)).contains("not-for-the-log"), "transcripts are opt-in")
+        let raw = try Diagnostics(directory: directory.appendingPathComponent("debug"), transcripts: true)
+        raw.text("input", "debug-transcript")
+        let debug = try FileManager.default.contentsOfDirectory(at: raw.directory, includingPropertiesForKeys: nil).first!
+        check((try String(contentsOf: debug, encoding: .utf8)).contains("debug-transcript"), "debug transcripts are available")
+        for _ in 0..<30 { logger.event("rotate", ["padding":String(repeating: "x", count:120_000)]) }
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { !$0.hasDirectoryPath }
+        check(files.count == 3, "log rotation is bounded")
+        for file in files {
+            let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
+            check(permissions.intValue & 0o777 == 0o600, "logs are private")
+            for line in try String(contentsOf: file, encoding: .utf8).split(separator:"\n") { _ = try JSONSerialization.jsonObject(with: Data(line.utf8)) }
+        }
+        print("Diagnostics checks passed")
+    } catch { fputs("Diagnostics checks failed: \(error)\n", stderr); exit(1) }
     exit(0)
 }
 
@@ -59,13 +80,25 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var ready = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        do {
+            let saved = Bundle.main.url(forResource: "workspace", withExtension: "txt").flatMap { try? String(contentsOf: $0, encoding: .utf8) }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let workspace = argument("--workspace") ?? saved ?? FileManager.default.currentDirectoryPath
+            let state = argument("--state-dir") ?? URL(fileURLWithPath: workspace).appendingPathComponent(".geniewish").path
+            let directory = URL(fileURLWithPath: argument("--log-dir") ?? URL(fileURLWithPath: state).appendingPathComponent("logs").path)
+            Diagnostics.shared = try Diagnostics(directory: directory, transcripts: CommandLine.arguments.contains("--debug-transcripts"))
+            let build = Bundle.main.url(forResource: "build", withExtension: "txt").flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "unknown"
+            Diagnostics.shared?.event("startup", ["build": build.trimmingCharacters(in: .whitespacesAndNewlines), "transcripts": Diagnostics.shared?.transcripts ?? false])
+        } catch { fputs("geniewish troubleshooting logs could not be opened.\n", stderr) }
         buildWindow()
-        microphone.onStatus = { [weak self] text in self?.status.stringValue = text }
+        microphone.onStatus = { [weak self] text in
+            Diagnostics.shared?.event("microphone.status", ["status":text])
+            self?.status.stringValue = text
+        }
         microphone.onPartial = { [weak self] text in
             self?.partial.stringValue = text.isEmpty ? "Use headphones · pause briefly to send" : "Hearing: \(text)"
             self?.speaker.humanSpeaking = !text.isEmpty
         }
-        microphone.onText = { [weak self] text in self?.sendHuman(text) }
+        microphone.onText = { [weak self] text in self?.sendHuman(text, source: "speech") }
         speaker.onDelivered = { [weak self] delivery in self?.sendJSON(["type": "delivered", "delivery": delivery]) }
         speaker.onError = { [weak self] text in self?.append("geniewish", text) }
         connect()
@@ -76,6 +109,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         let applicationMenu = NSMenu()
         applicationMenu.addItem(withTitle: "Quit geniewish", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        applicationMenu.addItem(withTitle: "Open troubleshooting logs", action: #selector(openLogs), keyEquivalent: "l")
         let menuItem = NSMenuItem()
         menuItem.submenu = applicationMenu
         menu.addItem(menuItem)
@@ -162,12 +196,15 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         core.currentDirectoryURL = URL(fileURLWithPath: workspace)
         core.arguments = ["--live", "--ack-delivery", "--workspace", workspace, "--codex", codex]
         if let state = argument("--state-dir") { core.arguments! += ["--state-dir", state] }
+        if let logs = Diagnostics.shared?.directory.path { core.arguments! += ["--log-dir", logs] }
+        if CommandLine.arguments.contains("--debug-transcripts") { core.arguments!.append("--debug-transcripts") }
         let output = Pipe()
         let errors = Pipe()
         core.standardInput = input
         core.standardOutput = output
         core.standardError = errors
         core.terminationHandler = { ended in
+            Diagnostics.shared?.event("core.exit", ["status": ended.terminationStatus, "reason": ended.terminationReason.rawValue])
             DispatchQueue.main.async {
                 self.ready = false
                 self.microphone.stop()
@@ -193,6 +230,8 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         buffer.removeSubrange(...end)
                         if let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
                             DispatchQueue.main.async { self.event(event) }
+                        } else {
+                            Diagnostics.shared?.event("core.invalid_event", ["bytes": line.count])
                         }
                     }
                 }
@@ -202,13 +241,18 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     let data = errors.fileHandleForReading.availableData
                     if data.isEmpty { break }
                     let text = String(decoding: data, as: UTF8.self)
+                    Diagnostics.shared?.text("core.stderr", text)
                     DispatchQueue.main.async { self.stderrText = String((self.stderrText + text).suffix(4000)) }
                 }
             }
-        } catch { append("geniewish", "Could not launch the Rust core: \(error.localizedDescription)") }
+        } catch {
+            Diagnostics.shared?.error("core.launch_error", error)
+            append("geniewish", "Could not launch the Rust core: \(error.localizedDescription)")
+        }
     }
 
     private func event(_ event: [String: Any]) {
+        Diagnostics.shared?.event("core.event", ["type":event["type"] ?? "unknown", "genie":event["genie"] ?? NSNull(), "method":event["method"] ?? NSNull()])
         switch event["type"] as? String {
         case "ready":
             ready = true
@@ -277,7 +321,8 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let data = try? JSONSerialization.data(withJSONObject: value), let text = String(data: data, encoding: .utf8) { send(text) }
     }
 
-    private func sendHuman(_ text: String) {
+    private func sendHuman(_ text: String, source: String = "text") {
+        Diagnostics.shared?.text("input", text, fields: ["source":source,"active":active ?? "none"])
         guard ready else { append("geniewish", "Wait for your team to connect before sending a command."); return }
         speaker.stop()
         let normalized = text.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines))
@@ -288,12 +333,13 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if ["quit", "quit geniewish"].contains(normalized) { NSApp.terminate(nil); return }
         append("Human", text)
-        sendJSON(["type": "input", "text": text])
+        sendJSON(["type": "input", "text": text, "source":source])
     }
 
     @objc private func startListening() { if ready { microphone.start() } }
     @objc private func pauseListening() { microphone.stop() }
     @objc private func stopSpeaking() { speaker.stop() }
+    @objc private func openLogs() { if let directory = Diagnostics.shared?.directory { NSWorkspace.shared.open(directory) } }
     @objc private func typed() {
         let text = textInput.stringValue
         textInput.stringValue = ""

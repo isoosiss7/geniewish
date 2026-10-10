@@ -14,6 +14,8 @@ struct Options {
     live: bool,
     check: bool,
     playback: bool,
+    transcripts: bool,
+    logs: Option<PathBuf>,
     executable: String,
     workspace: PathBuf,
     state: PathBuf,
@@ -24,6 +26,8 @@ fn options() -> Result<Option<Options>> {
         live: false,
         check: false,
         playback: false,
+        transcripts: false,
+        logs: None,
         executable: "codex".into(),
         workspace: std::env::current_dir()?,
         state: ".geniewish".into(),
@@ -40,6 +44,10 @@ fn options() -> Result<Option<Options>> {
             "--live" => options.live = true,
             "--check-runtime" => options.check = true,
             "--ack-delivery" => options.playback = true,
+            "--debug-transcripts" => options.transcripts = true,
+            "--log-dir" => {
+                options.logs = Some(arguments.next().context("--log-dir needs a path.")?.into())
+            }
             "--codex" => options.executable = arguments.next().context("--codex needs a path.")?,
             "--workspace" => {
                 options.workspace = arguments
@@ -64,6 +72,24 @@ async fn main() -> Result<()> {
     let Some(options) = options()? else {
         return Ok(());
     };
+    let logs = options
+        .logs
+        .clone()
+        .unwrap_or_else(|| options.state.join("logs"));
+    geniewish::diagnostics::init(&logs, options.transcripts)?;
+    let result = run(options).await;
+    if let Err(error) = &result {
+        geniewish::diagnostics::text("fatal_error", &format!("{error:#}"));
+    }
+    geniewish::diagnostics::record("shutdown", json!({"success":result.is_ok()}));
+    result
+}
+
+async fn run(options: Options) -> Result<()> {
+    geniewish::diagnostics::record(
+        "startup",
+        json!({"version":env!("CARGO_PKG_VERSION"),"live":options.live,"playback":options.playback,"transcripts":options.transcripts}),
+    );
     if options.check {
         let _server = AppServer::connect(&options.executable).await?;
         emit(json!({"type":"connected","client":"geniewish"}))?;
@@ -106,7 +132,9 @@ async fn main() -> Result<()> {
                         Err(error) => {emit(json!({"type":"error","text":format!("{error:#}")}))?; continue;}
                     }
                 }
+                geniewish::diagnostics::text("input", &line);
                 if let Err(error) = handle(&mut state, &store, &mut runtime, &line).await {
+                    geniewish::diagnostics::text("command_error", &format!("{error:#}"));
                     emit(json!({"type":"error","text":format!("{error:#}")}))?;
                 }
                 emit_team(&state)?;
@@ -142,6 +170,10 @@ async fn handle(
     input: &str,
 ) -> Result<()> {
     let routed = route(input)?;
+    geniewish::diagnostics::record(
+        "route",
+        json!({"target":routed.target,"action":match &routed.command {Command::Message(_)=>"message", Command::Hire{..}=>"hire", Command::Switch=>"switch", _=>"control"}}),
+    );
     if state.manager.is_none() {
         ensure!(
             routed.target.is_some(),

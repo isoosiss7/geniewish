@@ -42,6 +42,20 @@ This is an early voice preview. Real microphone accuracy, pronunciation, echo, a
 ./scripts/run-mac.sh --self-test
 ```
 
+## Troubleshooting
+
+Logs are saved under `.geniewish/logs/` (or `--log-dir PATH`). In the Mac app, choose **geniewish → Open troubleshooting logs**, or press Command-L.
+
+Both the Rust core and the Mac adapter write timestamped JSON lines. They record recognition lifecycle and errors, permissions, routing, runtime methods and failures, and playback. Each process keeps three files of up to about 1 MB, with ten recent sessions retained per component. Files have private permissions and are excluded from Git.
+
+Transcripts and error text are omitted by default. For a local reproduction that includes recognized/typed commands:
+
+```sh
+./scripts/run-mac.sh --debug-transcripts
+```
+
+The text client supports the same flag. Debug transcripts may contain private instructions; keep these logs local. The app does not log audio recordings, authentication files, full model replies, or tool arguments.
+
 ## Development
 
 ```sh

@@ -60,6 +60,10 @@ pub fn change<T>(
 }
 
 pub fn emit(value: Value) -> Result<()> {
+    crate::diagnostics::record(
+        "output",
+        json!({"type":value["type"],"genie":value["genie"],"method":value["method"],"status":value["status"]}),
+    );
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, &value)?;

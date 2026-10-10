@@ -43,9 +43,11 @@ final class Microphone {
         starting = true
         generation += 1
         let current = generation
+        Diagnostics.shared?.event("microphone.start", ["generation":current])
         onStatus("Waiting for microphone and speech permissions…")
         SFSpeechRecognizer.requestAuthorization { status in
             DispatchQueue.main.async {
+                Diagnostics.shared?.event("speech.authorization", ["status":status.rawValue])
                 guard current == self.generation else { return }
                 guard status == .authorized else {
                     self.starting = false
@@ -54,6 +56,7 @@ final class Microphone {
                 }
                 AVCaptureDevice.requestAccess(for: .audio) { allowed in
                     DispatchQueue.main.async {
+                        Diagnostics.shared?.event("microphone.authorization", ["allowed":allowed])
                         guard current == self.generation else { return }
                         self.starting = false
                         guard allowed else {
@@ -77,7 +80,8 @@ final class Microphone {
         }
     }
 
-    func stop() {
+    func stop(_ reason: String = "requested") {
+        Diagnostics.shared?.event("microphone.stop", ["reason":reason,"generation":generation])
         listening = false
         starting = false
         timer?.invalidate()
@@ -116,6 +120,7 @@ final class Microphone {
         beganAt = Date()
         let node = engine.inputNode
         let format = node.outputFormat(forBus: 0)
+        Diagnostics.shared?.event("recognition.start", ["generation":current,"sample_rate":format.sampleRate,"channels":format.channelCount,"on_device":true])
         guard format.sampleRate > 0, format.channelCount > 0 else {
             stop()
             onStatus("No microphone is available. Connect one and try again.")
@@ -127,6 +132,10 @@ final class Microphone {
             DispatchQueue.main.async {
                 guard current == self.generation, self.listening else { return }
                 if let result = result {
+                    if self.utterance.text != result.bestTranscription.formattedString {
+                        let scores = result.bestTranscription.segments.map { $0.confidence }
+                        Diagnostics.shared?.event("recognition.partial", ["chars":result.bestTranscription.formattedString.count,"final":result.isFinal,"confidence":scores.isEmpty ? 0 : scores.reduce(0,+) / Float(scores.count)])
+                    }
                     self.utterance.update(result.bestTranscription.formattedString)
                     self.onPartial(self.utterance.text)
                     if result.isFinal {
@@ -135,7 +144,8 @@ final class Microphone {
                     }
                 }
                 if let error = error, current == self.generation {
-                    self.stop()
+                    Diagnostics.shared?.error("recognition.error", error)
+                    self.stop("recognition_error")
                     self.onStatus("Recognition stopped: \(error.localizedDescription). Try Start listening again.")
                 }
             }
@@ -145,6 +155,7 @@ final class Microphone {
             try engine.start()
             onStatus("Listening · pause briefly to send · use headphones")
         } catch {
+            Diagnostics.shared?.error("microphone.error", error)
             stop()
             onStatus("Microphone could not start: \(error.localizedDescription)")
         }
@@ -152,6 +163,7 @@ final class Microphone {
 
     private func finish(final: Bool = false) {
         guard let text = utterance.take(final: final) else { return }
+        Diagnostics.shared?.text("recognition.committed", text, fields:["endpoint":final ? "final" : "pause","generation":generation])
         end()
         onText(text)
         onPartial("")
@@ -182,6 +194,7 @@ final class Speaker {
     }
 
     func stop() {
+        Diagnostics.shared?.event("playback.stop", ["interrupted":playing != nil,"queued":queue.count])
         generation += 1
         queue.removeAll()
         if playing?.isRunning == true { playing?.terminate() }
@@ -201,8 +214,10 @@ final class Speaker {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let current = generation
+        Diagnostics.shared?.event("playback.start", ["voice":event["voice"] ?? "Daniel","chars":text.count,"has_delivery":event["delivery"] != nil])
         playing = process
         process.terminationHandler = { ended in
+            Diagnostics.shared?.event("playback.end", ["status":ended.terminationStatus,"generation":current])
             DispatchQueue.main.async {
                 guard current == self.generation else { return }
                 self.playing = nil
@@ -222,6 +237,7 @@ final class Speaker {
                 try? input.fileHandleForWriting.close()
             }
         } catch {
+            Diagnostics.shared?.error("playback.error", error)
             playing = nil
             onError("Speech could not start: \(error.localizedDescription)")
             next()
