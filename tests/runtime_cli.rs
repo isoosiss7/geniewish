@@ -534,3 +534,18 @@ fn a_short_answer_to_hr_keeps_its_owner_even_after_restart() {
     assert_eq!(state["genies"][0]["thread_id"], thread);
     assert_eq!(state["genies"][1]["name"], "Ruby");
 }
+
+#[test]
+fn hr_tool_switch_acknowledges_the_new_speaker() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    client.reply("Mike");
+    let answer = client.reply("hire Annie and let me talk to her");
+    assert_eq!(answer["genie"], "Annie");
+    assert_eq!(answer["text"], "Annie here.");
+    assert_eq!(answer["voice"], "Samantha");
+    client.until(|e| e["type"] == "completed" && e["genie"] == "Mike");
+    let state = saved(directory.path());
+    assert_eq!(state["active"], state["genies"][1]["id"]);
+    assert!(state["genies"][1]["thread_id"].is_null());
+}

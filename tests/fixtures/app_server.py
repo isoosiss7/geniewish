@@ -113,6 +113,10 @@ def hr_call(thread, turn, text):
         result,data=tool('hire');answer=data if result['isError'] else 'Hired a genie.'
     elif text in ['yes', 'Yes, do not retire Annie']:
         result,data=tool('confirm_retire','Annie');answer=data
+    elif text=='hire Annie and let me talk to her':
+        result,data=tool('hire','Annie')
+        if not result['isError']: result,data=tool('switch','Annie')
+        answer=data if result['isError'] else 'You are talking to Annie.'
     elif text == 'hire Annie then ask her to reply':
         result,data=tool('hire','Annie')
         if not result['isError']: result,data=tool('message','Annie',text='please reply')

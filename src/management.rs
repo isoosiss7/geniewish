@@ -129,7 +129,14 @@ impl Runtime {
                     state.active == state.manager,
                     "Human has already switched away from HR; do not change the foreground from a background HR turn."
                 );
-                change(state, store, |s| s.switch(required()?))?;
+                let genie = state.named(required()?)?.clone();
+                if genie.thread_id.is_some() {
+                    self.ensure_thread(state, store, genie.id).await?;
+                }
+                change(state, store, |s| s.switch(&genie.name))?;
+                crate::runtime::emit(
+                    json!({"type":"reply","genie":genie.name,"voice":genie.voice,"text":if self.busy(genie.id) {format!("{} is busy but listening.",genie.name)} else {format!("{} here.",genie.name)}}),
+                )?;
                 result = json!({"active":state.current()?.name});
             }
             "message" => {
