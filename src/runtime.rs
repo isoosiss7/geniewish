@@ -7,6 +7,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
+    os::unix::fs::DirBuilderExt,
     path::PathBuf,
 };
 
@@ -80,7 +81,10 @@ impl Runtime {
         workspace: PathBuf,
         mut settings: Settings,
     ) -> Result<Self> {
-        std::fs::create_dir_all(&settings.output_dir)?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&settings.output_dir)?;
         settings.output_dir = settings.output_dir.canonicalize()?;
         Ok(Self {
             server: AppServer::connect(executable).await?,
@@ -132,7 +136,8 @@ impl Runtime {
             biased;
             event = self.server.next_event() => event,
             request = self.bridge.requests.recv() => {
-                let request = request.context("HR tool bridge disconnected.")?;
+                let mut request = request.context("HR tool bridge disconnected.")?;
+                request.call.id=format!("{}:{}",self.turns.get(&request.call.owner).map(String::as_str).unwrap_or("stale"),request.call.id);
                 let id = request.call.id.clone();
                 let message = json!({"method":"geniewish/tool/call","params":{"callId":id}});
                 if let Some(previous) = self.tool_results.get(&id) {
@@ -166,10 +171,11 @@ impl Runtime {
         if manager {
             config["mcp_servers.geniewish_hr"] = json!({"command":std::env::current_exe()?,"args":["--hr-tools",self.bridge.path.to_str().context("Invalid local tool path")?,&owner.to_string()],"enabled":true,"required":true,"startup_timeout_sec":10,"tool_timeout_sec":120,"default_tools_approval_mode":"approve"});
         } else {
+            config["tools.experimental_request_user_input.enabled"] = json!(false);
             config["sandbox_workspace_write.writable_roots"] = json!([self.settings.output_dir]);
         }
         let voice_policy = format!(
-            "Your name is {}. Refer to the user as Human. This is your one lifetime conversation. Human's role assignment accompanies messages and can be blank or change. Keep final replies plain prose, usually two to four short sentences; no spoken Markdown, tables, code blocks or full paths. For detailed reports save the full result in {} with a unique filename, verify successful writing, and tell Human the actual filename and a brief summary. Project source stays in its workspace. Human can request a longer readout. Do not give intermediate progress; only the final result. Ask actionable questions and seek required approvals. ",
+            "Your name is {}. Refer to the user as Human. This is your one lifetime conversation. Human's role assignment accompanies messages and can be blank or change. Keep final replies plain prose, usually two to four short sentences; no spoken Markdown, tables, code blocks or full paths. For detailed reports save the full result in {} with a short descriptive filename such as homepage-plan.md (append a small numeric suffix if it exists; avoid timestamps or random suffixes), verify successful writing, and tell Human the actual filename and a brief summary. Project source stays in its workspace. Human can request a longer readout. Do not give intermediate progress; only the final result. Ask actionable questions and seek required approvals. ",
             genie.name,
             self.settings.output_dir.display()
         );
@@ -272,8 +278,9 @@ impl Runtime {
             )
         } else {
             format!(
-                "Human's current role assignment for you: {}.",
-                if role.is_empty() { "none" } else { role }
+                "Human's current role assignment for you: {}. Current geniewish delivery policy: short plain-text final reply; detailed reports in {}. Use short descriptive filenames, with small numeric suffixes for collisions; no timestamps or random suffixes. Verify the save and announce the actual filename. Project source stays in its workspace.",
+                if role.is_empty() { "none" } else { role },
+                self.settings.output_dir.display()
             )
         };
         let input = json!([{ "type":"text", "text":context }, {"type":"text","text":text}]);

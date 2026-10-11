@@ -212,23 +212,6 @@ async fn handle(
         .context("Use --live for natural input interpretation.")?
         .interpret(state, store, input)
         .await?;
-    if matches!(
-        routed.command,
-        Command::Hire { .. }
-            | Command::SetRole { .. }
-            | Command::Retire(_)
-            | Command::ConfirmRetire(_)
-            | Command::CancelRetirement
-            | Command::Roster
-            | Command::Inbox
-            | Command::Read(_)
-    ) {
-        routed.target = state
-            .manager
-            .and_then(|id| state.get(id).ok().map(|g| g.name.clone()))
-            .or(routed.target);
-        routed.command = Command::Message(input.to_owned());
-    }
     if matches!(routed.command, Command::Message(_))
         && (routed.target.as_ref().is_some_and(|target| {
             state
@@ -257,7 +240,7 @@ async fn handle(
     }
     geniewish::diagnostics::record(
         "route",
-        json!({"target":routed.target,"action":match &routed.command {Command::Message(_)=>"message", Command::Hire{..}=>"hire", Command::Switch=>"switch", _=>"control"}}),
+        json!({"target":routed.target,"action":match &routed.command {Command::Message(_)=>"message", Command::Switch=>"switch", _=>"control"}}),
     );
     if state.manager.is_none() {
         ensure!(
@@ -298,14 +281,6 @@ async fn handle(
                 },
             )
         }
-        Command::Hire { .. }
-        | Command::SetRole { .. }
-        | Command::Retire(_)
-        | Command::ConfirmRetire(_)
-        | Command::CancelRetirement
-        | Command::Roster
-        | Command::Inbox
-        | Command::Read(_) => unreachable!("Management dialogue is handled by HR tools"),
         Command::Approve(accept) => {
             runtime
                 .as_mut()

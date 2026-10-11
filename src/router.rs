@@ -29,14 +29,6 @@ pub fn name(input: &str) -> Result<&'static str> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Switch,
-    Hire { name: Option<String>, role: String },
-    SetRole { name: String, role: String },
-    Retire(String),
-    ConfirmRetire(String),
-    CancelRetirement,
-    Roster,
-    Inbox,
-    Read(String),
     Approve(bool),
     CancelWork,
     StopSpeech,

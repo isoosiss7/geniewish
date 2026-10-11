@@ -299,7 +299,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
             speaker.enqueue(event)
         case "working": break
         case "update":
-            append("geniewish", "New message from \(event["genie"] as? String ?? "a genie"). Say 'Mike, any messages?' to check.")
+            append("geniewish", "New message from \(event["genie"] as? String ?? "a genie"). Say 'any messages?' to check.")
             chime()
         case "approval":
             let genie = event["genie"] as? String ?? "Genie"

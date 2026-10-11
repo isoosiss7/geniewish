@@ -1,5 +1,5 @@
 //! A local stdio MCP adapter. Only the parent client owns state and executes actions.
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -139,12 +139,15 @@ pub async fn serve(path: &Path, owner: u64) -> Result<()> {
                     Ok(serde_json::from_str::<Value>(&response)?)
                 }.await
             }
-            _ => bail!("Unsupported MCP request"),
+            _ => Err(anyhow::anyhow!("Unsupported MCP request")),
         };
         let response = match result {
             Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
-            Err(error) => {
+            Err(error) if message["method"] == "tools/call" => {
                 json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":error.to_string()}],"isError":true}})
+            }
+            Err(error) => {
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":error.to_string()}})
             }
         };
         output

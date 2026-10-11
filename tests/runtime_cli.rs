@@ -483,3 +483,54 @@ fn background_hr_hiring_preserves_the_foreground_and_duplicate_calls_execute_onc
         assert_eq!(state["genies"].as_array().unwrap().len(), 3);
     }
 }
+
+#[test]
+fn interrupted_hr_readouts_preserve_original_message_receipts_across_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open_playback(directory.path(), "", true);
+    client.team();
+    client.send("Annie, please reply");
+    let original = client.until(|e| e["type"] == "reply" && e["genie"] == "Annie");
+    client.until(|e| e["type"] == "completed" && e["genie"] == "Annie");
+    client.reply("Talk to Mike");
+    let interrupted = client.reply("Read Annie's message");
+    client.stop();
+    let mut resumed = Client::open_playback(directory.path(), "", true);
+    resumed.send(
+        &serde_json::json!({"type":"delivered","delivery":interrupted["delivery"]}).to_string(),
+    );
+    resumed.until(|e| e["type"] == "error");
+    let replayed = resumed.reply("Read Mike's message");
+    assert_eq!(replayed["text"], "fixture reply");
+    resumed
+        .send(&serde_json::json!({"type":"delivered","delivery":replayed["delivery"]}).to_string());
+    resumed.reply("Mike, any messages?");
+    let state = saved(directory.path());
+    assert!(
+        state["inbox"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["item_id"] == original["delivery"]["item_id"]
+                && m["thread_id"] == original["delivery"]["thread_id"])
+            .unwrap()["read"]
+            .as_bool()
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_short_answer_to_hr_keeps_its_owner_even_after_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    client.reply("Mike");
+    client.reply("ask me which genie to hire");
+    let thread = saved(directory.path())["genies"][0]["thread_id"].clone();
+    client.stop();
+    let mut resumed = Client::open(directory.path(), "");
+    resumed.reply("Ruby");
+    let state = saved(directory.path());
+    assert_eq!(state["active"], state["manager"]);
+    assert_eq!(state["genies"][0]["thread_id"], thread);
+    assert_eq!(state["genies"][1]["name"], "Ruby");
+}

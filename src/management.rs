@@ -149,6 +149,8 @@ impl Runtime {
                 let (update, text) = self.read_update(state, required()?).await?;
                 self.hr_reads.push(crate::runtime::Delivery::from(&update));
                 self.hr_reads.extend(update.relayed.clone());
+                let mut unique = std::collections::HashSet::new();
+                self.hr_reads.retain(|d| unique.insert(d.clone()));
                 result = json!({"from":required()?,"message":text});
             }
             _ => bail!("Unsupported management action."),

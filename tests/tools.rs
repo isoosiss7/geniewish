@@ -81,6 +81,11 @@ fn stdio_mcp_adapter_lists_tools_and_reports_a_disconnected_parent() {
         call(1, "initialize", json!({}))["result"]["serverInfo"]["name"],
         "geniewish"
     );
+    assert_eq!(
+        call(4, "resources/list", json!({}))["error"]["code"],
+        -32601
+    );
+    assert_eq!(call(5, "ping", json!({}))["result"], json!({}));
     let catalog = call(2, "tools/list", json!({}));
     assert_eq!(catalog["result"]["tools"].as_array().unwrap().len(), 2);
     assert!(call(3,"tools/call",json!({"name":"manage_genies","arguments":{"action":"hire","name":null,"role":"","text":""}}))["result"]["isError"].as_bool().unwrap());

@@ -22,6 +22,7 @@ def interpret(snapshot):
     body = original.strip().rstrip('.?!')
     body = re.sub(r'^(hi|hello|hey) ', '', body, flags=re.I)
     target = None
+    if original in snapshot['catalog'] and 'which name' in (snapshot.get('last_reply') or {}).get('text','').lower(): return {'action':'message','target':'Mike','name':None,'role':'','text':original}
     if body=='hire Annie then ask her to reply': return {'action':'message','target':'Mike','name':None,'role':'','text':original}
     for prefix in ['i want to speak to ', 'i want to talk to ', 'talk to ', 'speak to ', 'switch to ', 'back to ']:
         if body.lower().startswith(prefix):
@@ -59,6 +60,12 @@ def interpret(snapshot):
     elif lower.startswith('unrouteable'): action, target, text = 'switch', 'InventedName', ''
     return {'action':action,'target':target,'name':chosen,'role':role,'text':text}
 
+
+def route(snapshot):
+    decision=interpret(snapshot)
+    if decision['action'] in ['hire','set_role','retire','confirm_retire','cancel_retirement','roster','inbox','read']:
+        decision={'action':'message','target':snapshot.get('manager') or decision.get('target') or 'Mike','text':snapshot['input']}
+    return {key:decision[key] for key in ['action','target','text']}
 
 def save():
     with state_lock: history.write_text(json.dumps(state))
@@ -100,7 +107,9 @@ def hr_call(thread, turn, text):
         return result, json.loads(content) if not result['isError'] else content
     catalog = ['Mike','Lucas','Annie','Ben','Clara','Allan','Oscar','Ruby','Zoe','Hugo']
     decision = interpret({'input':text,'catalog':catalog})
-    if text=='delayed hire':
+    if text in ['Ruby','Zoe']:
+        result,data=tool('hire',text);answer='Hired '+text+'.'
+    elif text=='delayed hire':
         result,data=tool('hire');answer=data if result['isError'] else 'Hired a genie.'
     elif text in ['yes', 'Yes, do not retire Annie']:
         result,data=tool('confirm_retire','Annie');answer=data
@@ -210,7 +219,7 @@ for line in sys.stdin:
             assert params['outputSchema']['additionalProperties'] is False
             snapshot = json.loads(text)
             state.setdefault('routing_inputs',[]).append(snapshot)
-            finish(thread, turn, json.dumps(interpret(snapshot)))
+            finish(thread, turn, json.dumps(route(snapshot)))
         elif state['threads'][thread].get('hr_config'):
             after_response = lambda:hr_call(thread,turn,text)
         elif text == 'needs approval':

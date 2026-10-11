@@ -50,43 +50,27 @@ fn retirement_reuses_a_name_with_a_fresh_identity() {
 
 #[test]
 fn validated_work_preserves_the_original_input_and_rejects_invented_names() {
-    let mut decision: Decision = serde_json::from_value(
-        serde_json::json!({"action":"message","target":null,"name":null,"role":"","text":""}),
-    )
-    .unwrap();
+    let mut decision: Decision =
+        serde_json::from_value(serde_json::json!({"action":"message","target":null,"text":""}))
+            .unwrap();
     let text = "Explain Annie's role and keep the quoted code exactly";
     assert_eq!(
         decision.routed(text, &team()).unwrap().command,
         Command::Message(text.into())
     );
-    decision = serde_json::from_value(
-        serde_json::json!({"action":"switch","target":"Brian","name":null,"role":"","text":""}),
-    )
-    .unwrap();
+    decision =
+        serde_json::from_value(serde_json::json!({"action":"switch","target":"Brian","text":""}))
+            .unwrap();
     assert!(decision.routed("Talk to Brian", &team()).is_err());
 }
 
 #[test]
-fn interpretation_cannot_confirm_retirement_without_an_explicit_name() {
-    let mut state = team();
-    state.request_retirement("Annie").unwrap();
-    let decision = || {
-        serde_json::from_value::<Decision>(serde_json::json!({"action":"confirm_retire","target":"Mike","name":"Annie","role":"","text":""})).unwrap()
-    };
-    assert!(decision().routed("yes", &state).is_err());
-    assert!(decision().routed("Do not retire Annie", &state).is_err());
-    assert!(
-        decision()
-            .routed("Yes, do not retire Annie", &state)
-            .is_err()
-    );
-    assert_eq!(
-        decision()
-            .routed("Yes, retire Annie", &state)
-            .unwrap()
-            .command,
-        Command::ConfirmRetire("Annie".into())
-    );
+fn routing_cannot_execute_management_actions() {
+    let decision: Decision = serde_json::from_value(
+        serde_json::json!({"action":"confirm_retire","target":"Mike","text":""}),
+    )
+    .unwrap();
+    assert!(decision.routed("Yes, retire Annie", &team()).is_err());
 }
 
 #[test]
@@ -157,4 +141,18 @@ fn blank_roles_can_be_set_and_cleared_without_replacing_the_identity() {
         restored.named("Lucas").unwrap().thread_id.as_deref(),
         Some("lucas-lifetime")
     );
+}
+
+#[test]
+fn retiring_the_foreground_genie_returns_to_hr_and_old_updates_still_load() {
+    let mut state = team();
+    let annie = state.named("Annie").unwrap().id;
+    state.bind_thread(annie, "annie-thread").unwrap();
+    state.request_retirement("Annie").unwrap();
+    state.switch("Annie").unwrap();
+    state.finish_retirement(annie).unwrap();
+    state.validate().unwrap();
+    assert_eq!(state.active, state.manager);
+    let update: Update=serde_json::from_value(serde_json::json!({"owner":1,"thread_id":"legacy-thread","turn_id":"legacy-turn","item_id":"legacy-item","read":false})).unwrap();
+    assert!(update.relayed.is_empty());
 }
