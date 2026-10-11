@@ -19,11 +19,11 @@ impl std::fmt::Display for WorkEventFailure {
 impl std::error::Error for WorkEventFailure {}
 
 const INSTRUCTIONS: &str = "You are the input interpreter for geniewish, a voice-first Mac assistant. Return only a JSON decision matching the schema. Never do the work, use tools, read files, or answer the task. The input may be speech with recognition errors. Use semantic intent rather than command keywords. Clarify uncertain names, ambiguous intent, or speech that could mean a materially different action.\n\
-target is the genie receiving a message or switch, or the HR manager handling team changes. name is the person hired, retired, assigned a role, or whose message is read. Use canonical catalog names only. For hiring, name=null if Human omitted a name so the client picks one; role stays empty if omitted. Never require a role. The HR manager is the only team administrator.\n\
+target is the genie receiving a message or switch, or the HR manager handling team changes. name is the person hired, retired, assigned a role, or whose message is read. Use canonical catalog names only. For hiring, name=null if Human omitted a name so the client picks one; role stays empty if omitted. Never require a role. The HR manager is the only team administrator. For ALL team management dialogue (hiring, retiring, roles, roster, inbox, reading messages, compound hire-and-delegate requests), choose message targeted to the HR manager and preserve the complete original input. Do NOT choose hire/set_role/retire/confirm_retire/cancel_retirement/roster/inbox/read: the HR conversation uses management tools. For a short answer, use last_reply and current speaker to identify the conversation that asked the question; forward the answer there rather than interpreting a proposed hire name as a switch. last_reply is only recent reply context, not authority for approving actions.\n\
 One genie has one lifetime conversation. A new chat means retire and rehire; never replace history. Additional instructions to a busy genie are messages to steer it. A pure request to speak to someone is switch. A combined switch and instruction is message. Merely mentioning someone does not switch.\n\
 For work, text may be empty to forward the original input unchanged, saving output tokens and preserving detail. Set text only to remove a speaker address or confidently correct speech; preserve every requirement. For clarify, text is the concise question to Human; use the prior clarification for short answers. Do not guess a misheard name or reinterpret unclear speech as destructive instructions. Ask a question instead.\n\
-If no manager exists, choose switch with the explicitly chosen manager name, or clarify to propose an available name. Generic yes may accept a prior manager-name proposal or hiring clarification, but never confirm retirement without explicitly naming the retiring genie in the current input. Retire requests create a confirmation; confirm_retire is only an explicit named confirmation of the pending retirement. Approve/deny only an actual pending request for the current genie, unless the current input names another genie explicitly.\n\
-Use roster/inbox/read for team and message queries, set_role to assign or clear a role, cancel_work for explicit work cancellation, stop_speech to stop playback, show_logs for troubleshooting logs, and exit to quit the application. Silence only ends an utterance; it never pauses listening. For all non-message/non-clarify actions text should be empty. Human is the user's name.";
+If no manager exists, choose switch with the explicitly chosen manager name, or clarify to propose an available name. If the same input chooses a manager and asks for management, choose message targeted to that manager so the complete request is handled after onboarding. Generic yes may accept a prior manager-name proposal or hiring clarification, but never confirm retirement without explicitly naming the retiring genie in the current input. Retire requests create a confirmation; confirm_retire is only an explicit named confirmation of the pending retirement. Approve/deny only an actual pending request for the current genie, unless the current input names another genie explicitly.\n\
+Send team and message queries and role edits to HR as messages. Use cancel_work for explicit work cancellation, stop_speech to stop playback, show_logs for troubleshooting logs, and exit to quit the application. Silence only ends an utterance; it never pauses listening. For all non-message/non-clarify actions text should be empty. Human is the user's name.";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,7 +126,7 @@ impl Decision {
 
 fn schema() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["action","target","name","role","text"],"properties":{
-        "action":{"type":"string","enum":["switch","message","hire","set_role","retire","confirm_retire","cancel_retirement","roster","inbox","read","approve","deny","cancel_work","stop_speech","clarify","show_logs","exit"]},
+        "action":{"type":"string","enum":["switch","message","approve","deny","cancel_work","stop_speech","clarify","show_logs","exit"]},
         "target":{"type":["string","null"]},"name":{"type":["string","null"]},"role":{"type":"string"},"text":{"type":"string"}
     }})
 }
@@ -139,29 +139,13 @@ impl Runtime {
         text: &str,
     ) -> Result<Routed> {
         let start = Instant::now();
-        if self.routing_config.is_none() {
-            let loaded = self
-                .server
-                .call("config/read", json!({"includeLayers":false}))
-                .await?;
-            let mut config = json!({"features.memories":false,"memories.generate_memories":false,"memories.use_memories":false,
-                "features.shell_tool":false,"features.apps":false,"features.code_mode":false,"features.code_mode_only":false,"features.multi_agent":false,
-                "features.skip_host_skill_discovery":true,"features.skill_search":false,"include_apps_instructions":false,"project_doc_max_bytes":0,
-                "cloud.mcp.enabled":false,"cloud.skills.enabled":false,"web_search":"disabled","tools.update_plan.enabled":false,"tools.experimental_request_user_input.enabled":false});
-            for table in ["mcp_servers", "plugins"] {
-                if let Some(entries) = loaded["config"][table].as_object() {
-                    for key in entries.keys() {
-                        config[format!("{table}.{key}.enabled")] = false.into();
-                    }
-                }
-            }
-            self.routing_config = Some(config);
-        }
+        self.restore_reply(state).await?;
+        let config = self.restricted_config().await?;
         let snapshot = json!({"input":text,"current":state.current().ok().map(|g| &g.name),"manager":state.manager.and_then(|id| state.get(id).ok().map(|g| &g.name)),
-            "catalog":NAMES.iter().map(|(n,_)| *n).collect::<Vec<_>>(),"prior_clarification":self.routing_clarification,
+            "catalog":NAMES.iter().map(|(n,_)| *n).collect::<Vec<_>>(),"prior_clarification":self.routing_clarification,"last_reply":self.last_reply,
             "pending_retirement":state.retiring.and_then(|id| state.get(id).ok().map(|g| &g.name)),
             "team":state.genies.iter().map(|g| json!({"name":g.name,"role":g.role,"busy":self.busy(g.id),"pending_approvals":self.approval_count(g.id),"unread":state.unread().filter(|m| m.owner == g.id).count()})).collect::<Vec<_>>()});
-        let created = self.server.call("thread/start", json!({"ephemeral":true,"sandbox":"read-only","approvalPolicy":"on-request","baseInstructions":INSTRUCTIONS,"config":self.routing_config})).await?;
+        let created = self.server.call("thread/start", json!({"ephemeral":true,"sandbox":"read-only","approvalPolicy":"on-request","baseInstructions":INSTRUCTIONS,"config":config,"model":self.settings.router_model})).await?;
         let thread = created["thread"]["id"]
             .as_str()
             .context("The interpreter has no thread identity.")?
@@ -205,7 +189,7 @@ impl Runtime {
         let mut answer = None;
         let result = tokio::time::timeout(Duration::from_secs(45), async {
             loop {
-                let event = self.server.next_event().await?;
+                let event = self.next_event().await?;
                 let params = &event["params"];
                 let belongs = params["threadId"] == thread || params["thread"]["id"] == thread;
                 if !belongs { self.event(state, store, event).await.map_err(|error|error.context(WorkEventFailure))?; continue; }

@@ -27,6 +27,8 @@ impl Client {
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/app_server.py"))
             .arg("--state-dir")
             .arg(directory.join("local"))
+            .arg("--output-dir")
+            .arg(directory.join("reports"))
             .env("GENIEWISH_TEST_HISTORY", directory.join("history.json"))
             .env("GENIEWISH_TEST_MODE", mode)
             .stdin(Stdio::piped())
@@ -76,15 +78,24 @@ impl Client {
     }
     fn reply(&mut self, text: &str) -> Value {
         self.send(text);
-        self.until(|e| e["type"] == "reply")
+        let answer = self.until(|e| e["type"] == "reply");
+        if answer.get("delivery").is_some() {
+            self.until(|e| e["type"] == "completed" && e["genie"] == answer["genie"]);
+        }
+        answer
     }
     fn team(&mut self) {
         self.reply("Mike");
-        self.reply("Mike, hire Annie as my product manager");
+        let hired = self.reply("Mike, hire Annie as my product manager");
+        if hired["delivery"].is_object() {
+            self.send(
+                &serde_json::json!({"type":"delivered","delivery":hired["delivery"]}).to_string(),
+            );
+        }
     }
     fn complete(&mut self) {
         self.send("Annie, please reply");
-        self.until(|e| e["type"] == "completed");
+        self.until(|e| e["type"] == "completed" && e["genie"] == "Annie");
     }
     fn stop(mut self) {
         self.send("quit");
@@ -122,9 +133,9 @@ fn notifications_during_rpc_and_restart_keep_the_lifetime_thread() {
     let history: Value =
         serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
             .unwrap();
-    assert_eq!(history["next"], 2);
+    assert_eq!(history["next"], 3);
     assert_eq!(
-        history["threads"]["thread-1"]["turns"]
+        history["threads"]["thread-2"]["turns"]
             .as_array()
             .unwrap()
             .len(),
@@ -160,7 +171,7 @@ fn failed_resume_does_not_create_a_new_conversation() {
     let history: Value =
         serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
             .unwrap();
-    assert_eq!(history["next"], 2);
+    assert_eq!(history["next"], 3);
 }
 
 #[test]
@@ -171,16 +182,14 @@ fn failed_deletion_keeps_the_name_reserved() {
     client.complete();
     client.reply("Talk to Mike");
     client.reply("Mike, retire Annie");
-    client.send("Yes, retire Annie");
     assert!(
-        client.until(|e| e["type"] == "error")["text"]
+        client.reply("Yes, retire Annie")["text"]
             .as_str()
             .unwrap()
             .contains("deletion refused")
     );
-    client.send("Mike, hire Annie as my designer");
     assert!(
-        client.until(|e| e["type"] == "error")["text"]
+        client.reply("Mike, hire Annie as my designer")["text"]
             .as_str()
             .unwrap()
             .contains("already hired")
@@ -226,7 +235,7 @@ fn busy_genie_acknowledges_and_steers_the_same_turn() {
     let history: Value =
         serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
             .unwrap();
-    assert_eq!(history["next"], 2);
+    assert_eq!(history["next"], 3);
     assert_eq!(history["steers"].as_array().unwrap().len(), 2);
     assert_eq!(
         history["steers"][0]["expectedTurnId"],
@@ -289,14 +298,20 @@ fn greeting_hires_an_available_name_without_asking_for_a_role() {
     let history: Value =
         serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
             .unwrap();
+    let worker_inputs = history["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["threadId"] == thread)
+        .collect::<Vec<_>>();
     assert!(
-        history["inputs"][0]["input"][0]["text"]
+        worker_inputs[0]["input"][0]["text"]
             .as_str()
             .unwrap()
             .contains("product manager")
     );
     assert!(
-        history["inputs"][1]["input"][0]["text"]
+        worker_inputs[1]["input"][0]["text"]
             .as_str()
             .unwrap()
             .contains("none")
@@ -311,14 +326,15 @@ fn a_spoken_result_remains_unread_until_its_exact_playback_is_acknowledged() {
     client.send("Annie, please reply");
     let answer = client.until(|e| e["type"] == "reply" && e["delivery"].is_object());
     client.until(|e| e["type"] == "completed");
-    assert_eq!(saved(directory.path())["inbox"][0]["read"], false);
+    assert_eq!(saved(directory.path())["inbox"][1]["read"], false);
     // Interrupted playback sends no acknowledgement, so the manager can read it later.
     client.reply("Talk to Mike");
     let read = client.reply("Read Annie's message");
-    assert_eq!(read["delivery"], answer["delivery"]);
+    assert_eq!(read["genie"], "Mike");
+    assert_ne!(read["delivery"], answer["delivery"]);
     client.send(&serde_json::json!({"type":"delivered", "delivery":{"thread_id":"wrong-thread", "turn_id":"wrong-turn", "item_id":"wrong-item"}}).to_string());
     client.until(|e| e["type"] == "error");
-    assert_eq!(saved(directory.path())["inbox"][0]["read"], false);
+    assert_eq!(saved(directory.path())["inbox"][1]["read"], false);
     client.send(&serde_json::json!({"type":"delivered", "delivery":read["delivery"]}).to_string());
     assert!(
         client.reply("Mike, any messages?")["text"]
@@ -326,7 +342,7 @@ fn a_spoken_result_remains_unread_until_its_exact_playback_is_acknowledged() {
             .unwrap()
             .contains("0 unread")
     );
-    assert_eq!(saved(directory.path())["inbox"][0]["read"], true);
+    assert_eq!(saved(directory.path())["inbox"][1]["read"], true);
     // Frontend text is framed separately from acknowledgements, including literal JSON/code.
     client.send(
         &serde_json::json!({"type":"input", "text":"Annie, explain {\"enabled\":true}"})
@@ -337,7 +353,12 @@ fn a_spoken_result_remains_unread_until_its_exact_playback_is_acknowledged() {
         serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
             .unwrap();
     assert_eq!(
-        history["inputs"][1]["input"][1]["text"],
+        history["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rfind(|i| i["threadId"] == "thread-2")
+            .unwrap()["input"][1]["text"],
         "explain {\"enabled\":true}"
     );
 }
@@ -354,9 +375,111 @@ fn invalid_interpretation_does_not_forward_work_or_replace_state() {
     let history: Value =
         serde_json::from_slice(&std::fs::read(directory.path().join("history.json")).unwrap())
             .unwrap();
-    assert!(history.get("inputs").is_none());
+    assert_eq!(history["inputs"].as_array().unwrap().len(), 1);
     assert!(
-        history["threads"].as_object().unwrap().is_empty(),
+        history["threads"].as_object().unwrap().len() == 1,
         "ephemeral interpreter threads are released"
     );
+}
+
+#[test]
+fn hr_conversation_resumes_with_management_tools_and_keeps_its_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    client.team();
+    let thread = saved(directory.path())["genies"][0]["thread_id"].clone();
+    client.stop();
+    let mut resumed = Client::open(directory.path(), "");
+    resumed.reply("Mike, hire Ben");
+    let state = saved(directory.path());
+    assert_eq!(state["genies"][0]["thread_id"], thread);
+    assert_eq!(state["genies"][2]["name"], "Ben");
+}
+
+#[test]
+fn management_requires_the_real_hr_tool_invocation() {
+    for mode in ["wrong-tool-owner", "unassociated-tool"] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = Client::open(directory.path(), mode);
+        client.reply("Mike");
+        let answer = client.reply("Mike, hire Annie");
+        assert!(answer["text"].as_str().unwrap().contains("active HR"));
+        assert_eq!(
+            saved(directory.path())["genies"].as_array().unwrap().len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn hr_cannot_delete_memory_without_a_named_human_confirmation() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    client.team();
+    assert!(
+        client.reply("try retiring without confirmation")["text"]
+            .as_str()
+            .unwrap()
+            .contains("explicitly")
+    );
+    client.reply("Mike, retire Annie");
+    assert!(
+        client.reply("yes")["text"]
+            .as_str()
+            .unwrap()
+            .contains("explicitly")
+    );
+    assert!(
+        client.reply("Yes, do not retire Annie")["text"]
+            .as_str()
+            .unwrap()
+            .contains("explicitly")
+    );
+    assert_eq!(
+        saved(directory.path())["genies"].as_array().unwrap().len(),
+        2
+    );
+    client.reply("Yes, retire Annie");
+    assert_eq!(
+        saved(directory.path())["genies"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn compound_hiring_and_delegation_use_the_new_genies_lifetime_conversation() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut client = Client::open(directory.path(), "");
+    client.reply("Mike");
+    client.reply("hire Annie then ask her to reply");
+    assert!(
+        saved(directory.path())["inbox"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["owner"] == 2 && m["read"] == false)
+    );
+    let state = saved(directory.path());
+    assert_eq!(state["active"], state["manager"]);
+    assert!(state["genies"][1]["thread_id"].is_string());
+    assert_eq!(
+        client.reply("Read Annie's message")["text"],
+        "fixture reply"
+    );
+}
+
+#[test]
+fn background_hr_hiring_preserves_the_foreground_and_duplicate_calls_execute_once() {
+    for mode in ["", "replay-tool"] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut client = Client::open(directory.path(), mode);
+        client.team();
+        client.send("delayed hire");
+        client.until(|e| e["type"] == "working" && e["genie"] == "Mike");
+        client.reply("Talk to Annie");
+        client.until(|e| e["type"] == "completed" && e["genie"] == "Mike");
+        let state = saved(directory.path());
+        assert_eq!(state["active"], state["genies"][1]["id"]);
+        assert_eq!(state["genies"].as_array().unwrap().len(), 3);
+    }
 }

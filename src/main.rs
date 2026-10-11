@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use geniewish::{
     app_server::AppServer,
     router::Command,
-    runtime::{Runtime, change, emit},
+    runtime::{Runtime, Settings, change, emit, emit_team},
     state::State,
     storage::Store,
 };
@@ -19,6 +19,7 @@ struct Options {
     executable: String,
     workspace: PathBuf,
     state: PathBuf,
+    settings: Settings,
 }
 
 fn options() -> Result<Option<Options>> {
@@ -31,13 +32,20 @@ fn options() -> Result<Option<Options>> {
         executable: "codex".into(),
         workspace: std::env::current_dir()?,
         state: ".geniewish".into(),
+        settings: Settings {
+            output_dir: PathBuf::from(
+                std::env::var_os("HOME").context("HOME is unavailable; pass --output-dir")?,
+            )
+            .join("Desktop/geniewish"),
+            ..Settings::default()
+        },
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "geniewish\n\nOptions:\n  --live                 Connect to the installed Codex runtime\n  --check-runtime        Check the runtime protocol without creating a conversation\n  --codex PATH           Runtime executable (default: codex)\n  --workspace PATH       Workspace for new conversations\n  --state-dir PATH       Local metadata directory (default: .geniewish)\n  --ack-delivery         Wait for speech playback acknowledgements (native client)\n  --debug-transcripts    Include input/decision text in local diagnostics\n  --log-dir PATH         Log directory (default: .geniewish/logs)\n\nNatural input is interpreted by an LLM with --live. Input: one phrase per line; output: JSON events. Type 'quit' to exit.\nFirst choose a manager name, e.g. Mike. Then:\n  Mike, hire Annie as my product manager\n  Annie, help me plan the landing page\n  Talk to Mike\n  Mike, any messages?\n  Read Annie's message\n  Mike, retire Annie\n  Yes, retire Annie\n\nThis is the text fallback. For the Mac voice window, run ./scripts/run-mac.sh."
+                    "geniewish\n\nOptions:\n  --live                 Connect to the installed Codex runtime\n  --check-runtime        Check the runtime protocol without creating a conversation\n  --codex PATH           Runtime executable (default: codex)\n  --workspace PATH       Workspace for new conversations\n  --state-dir PATH       Local metadata directory (default: .geniewish)\n  --ack-delivery         Wait for speech playback acknowledgements (native client)\n  --debug-transcripts    Include input/decision text in local diagnostics\n  --log-dir PATH         Log directory (default: .geniewish/logs)\n  --router-model MODEL   Model for routing (default: runtime configuration)\n  --hr-model MODEL       Model for HR (default: runtime configuration)\n  --worker-model MODEL   Model for work genies (default: runtime configuration)\n  --output-dir PATH      Detailed reports (default: ~/Desktop/geniewish)\n\nNatural input is interpreted by an LLM with --live. Input: one phrase per line; output: JSON events. Type 'quit' to exit.\nFirst choose a manager name, e.g. Mike. Then:\n  Mike, hire Annie as my product manager\n  Annie, help me plan the landing page\n  Talk to Mike\n  Mike, any messages?\n  Read Annie's message\n  Mike, retire Annie\n  Yes, retire Annie\n\nThis is the text fallback. For the Mac voice window, run ./scripts/run-mac.sh."
                 );
                 return Ok(None);
             }
@@ -47,6 +55,24 @@ fn options() -> Result<Option<Options>> {
             "--debug-transcripts" => options.transcripts = true,
             "--log-dir" => {
                 options.logs = Some(arguments.next().context("--log-dir needs a path.")?.into())
+            }
+            "--router-model" => {
+                options.settings.router_model =
+                    Some(arguments.next().context("--router-model needs a model")?)
+            }
+            "--hr-model" => {
+                options.settings.hr_model =
+                    Some(arguments.next().context("--hr-model needs a model")?)
+            }
+            "--worker-model" => {
+                options.settings.worker_model =
+                    Some(arguments.next().context("--worker-model needs a model")?)
+            }
+            "--output-dir" => {
+                options.settings.output_dir = arguments
+                    .next()
+                    .context("--output-dir needs a path")?
+                    .into()
             }
             "--codex" => options.executable = arguments.next().context("--codex needs a path.")?,
             "--workspace" => {
@@ -69,6 +95,14 @@ fn options() -> Result<Option<Options>> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("--hr-tools") {
+        let path = std::env::args().nth(2).context("Missing HR bridge path")?;
+        let owner = std::env::args()
+            .nth(3)
+            .context("Missing HR owner")?
+            .parse()?;
+        return geniewish::tools::serve(std::path::Path::new(&path), owner).await;
+    }
     let Some(options) = options()? else {
         return Ok(());
     };
@@ -98,7 +132,8 @@ async fn run(options: Options) -> Result<()> {
     let store = Store::open(&options.state)?;
     let mut state = store.load()?;
     let mut runtime = if options.live {
-        let mut runtime = Runtime::connect(&options.executable, options.workspace).await?;
+        let mut runtime =
+            Runtime::connect(&options.executable, options.workspace, options.settings).await?;
         runtime.wait_for_playback = options.playback;
         Some(runtime)
     } else {
@@ -145,7 +180,7 @@ async fn run(options: Options) -> Result<()> {
                 emit_team(&state)?;
             }
             event = async {
-                match runtime.as_mut() {Some(runtime) => runtime.server.next_event().await, None => std::future::pending().await}
+                match runtime.as_mut() {Some(runtime) => runtime.next_event().await, None => std::future::pending().await}
             } => {
                 // Transport/storage failures stop the client; continuing could lose unread events or create replacement contexts.
                 let message = event?;
@@ -166,23 +201,45 @@ fn reply(state: &State, text: String) -> Result<()> {
     }
 }
 
-fn emit_team(state: &State) -> Result<()> {
-    emit(
-        json!({"type":"team","active":state.active.and_then(|id| state.get(id).ok().map(|g| &g.name)),"genies":state.genies.iter().map(|g| json!({"name":g.name,"role":g.role,"voice":g.voice})).collect::<Vec<_>>()}),
-    )
-}
-
 async fn handle(
     state: &mut State,
     store: &Store,
     runtime: &mut Option<Runtime>,
     input: &str,
 ) -> Result<bool> {
-    let routed = runtime
+    let mut routed = runtime
         .as_mut()
         .context("Use --live for natural input interpretation.")?
         .interpret(state, store, input)
         .await?;
+    if matches!(
+        routed.command,
+        Command::Hire { .. }
+            | Command::SetRole { .. }
+            | Command::Retire(_)
+            | Command::ConfirmRetire(_)
+            | Command::CancelRetirement
+            | Command::Roster
+            | Command::Inbox
+            | Command::Read(_)
+    ) {
+        routed.target = state
+            .manager
+            .and_then(|id| state.get(id).ok().map(|g| g.name.clone()))
+            .or(routed.target);
+        routed.command = Command::Message(input.to_owned());
+    }
+    if matches!(routed.command, Command::Message(_))
+        && (routed.target.as_ref().is_some_and(|target| {
+            state
+                .manager
+                .and_then(|id| state.get(id).ok())
+                .is_some_and(|g| &g.name == target)
+        }) || (routed.target.is_none() && state.active == state.manager))
+    {
+        // HR receives Human's complete wording, including named deletion consent.
+        routed.command = Command::Message(input.to_owned());
+    }
     if let Command::Clarify(text) = &routed.command {
         return reply(state, text.clone()).map(|_| false);
     }
@@ -241,119 +298,14 @@ async fn handle(
                 },
             )
         }
-        Command::Hire { name, role } => {
-            state.require_manager()?;
-            let name = name
-                .or_else(|| {
-                    geniewish::router::NAMES
-                        .iter()
-                        .find(|(name, _)| state.named(name).is_err())
-                        .map(|(name, _)| (*name).to_owned())
-                })
-                .context("All names are in use. Retire a genie to free a name.")?;
-            change(state, store, |s| s.hire(&name, &role))?;
-            reply(
-                state,
-                if role.is_empty() {
-                    format!("We hired {name}, Human.")
-                } else {
-                    format!("We hired {name} as your {role}, Human.")
-                },
-            )
-        }
-        Command::SetRole { name, role } => {
-            change(state, store, |s| s.set_role(&name, &role))?;
-            reply(
-                state,
-                if role.is_empty() {
-                    format!("{name}'s role is now blank, Human.")
-                } else {
-                    format!("{name}'s role is now {role}, Human.")
-                },
-            )
-        }
-        Command::Retire(name) => {
-            change(state, store, |s| s.request_retirement(&name))?;
-            reply(
-                state,
-                format!(
-                    "Say 'yes, retire {name}' to delete their conversation. Project files remain."
-                ),
-            )
-        }
-        Command::ConfirmRetire(name) => {
-            let id = state.confirmed_retirement(&name)?;
-            if let Some(runtime) = runtime {
-                runtime.retire(state, store, &name).await?;
-            } else {
-                ensure!(
-                    state.get(id)?.thread_id.is_none(),
-                    "Reconnect with --live to delete this genie's saved conversation."
-                );
-                change(state, store, |s| s.finish_retirement(id))?;
-            }
-            reply(
-                state,
-                format!("{name} is retired. Their name is available."),
-            )
-        }
-        Command::CancelRetirement => {
-            change(state, store, |s| {
-                s.retiring = None;
-                Ok(())
-            })?;
-            reply(state, "Retirement cancelled.".into())
-        }
-        Command::Roster => reply(
-            state,
-            state
-                .genies
-                .iter()
-                .map(|g| {
-                    if g.role.is_empty() {
-                        g.name.clone()
-                    } else {
-                        format!("{}: {}", g.name, g.role)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("; "),
-        ),
-        Command::Inbox => {
-            let mut counts = vec![];
-            for genie in &state.genies {
-                let count = state.unread().filter(|m| m.owner == genie.id).count();
-                if count > 0 {
-                    counts.push(format!("{count} from {}", genie.name));
-                }
-            }
-            reply(
-                state,
-                format!(
-                    "You have {} unread updates{}.",
-                    state.unread().count(),
-                    if counts.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", counts.join(", "))
-                    }
-                ),
-            )
-        }
-        Command::Read(name) => {
-            let runtime = runtime
-                .as_mut()
-                .context("Use --live to read the original saved message.")?;
-            let (update, text) = runtime.read_update(state, &name).await?;
-            let speaker = state.current()?.id;
-            runtime.reply_update(
-                state,
-                store,
-                &update,
-                speaker,
-                &format!("{name} says: {text}"),
-            )
-        }
+        Command::Hire { .. }
+        | Command::SetRole { .. }
+        | Command::Retire(_)
+        | Command::ConfirmRetire(_)
+        | Command::CancelRetirement
+        | Command::Roster
+        | Command::Inbox
+        | Command::Read(_) => unreachable!("Management dialogue is handled by HR tools"),
         Command::Approve(accept) => {
             runtime
                 .as_mut()

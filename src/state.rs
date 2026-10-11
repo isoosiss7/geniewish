@@ -12,6 +12,23 @@ pub struct Genie {
     pub thread_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct Delivery {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+}
+
+impl From<&Update> for Delivery {
+    fn from(update: &Update) -> Self {
+        Self {
+            thread_id: update.thread_id.clone(),
+            turn_id: update.turn_id.clone(),
+            item_id: update.item_id.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Update {
     pub owner: u64,
@@ -19,6 +36,8 @@ pub struct Update {
     pub turn_id: String,
     pub item_id: String,
     pub read: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relayed: Vec<Delivery>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -224,6 +243,9 @@ impl State {
             self.retiring == Some(id) && Some(id) != self.manager,
             "Retirement identity changed."
         );
+        if self.active == Some(id) {
+            self.active = self.manager;
+        }
         self.genies.retain(|g| g.id != id);
         self.inbox.retain(|m| m.owner != id);
         self.retiring = None;

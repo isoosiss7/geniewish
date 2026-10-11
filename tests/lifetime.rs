@@ -120,6 +120,7 @@ fn background_updates_are_deduplicated_and_keep_the_foreground() {
         turn_id: "turn-1".into(),
         item_id: "item-1".into(),
         read: false,
+        relayed: vec![],
     };
     assert!(state.record_update(update.clone()).unwrap());
     assert!(!state.record_update(update).unwrap());

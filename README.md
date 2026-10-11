@@ -16,7 +16,7 @@ Click **Start listening** and allow macOS microphone and speech recognition perm
 
 Speak naturally and pause for about a second to send the phrase. Microphone capture stays on between phrases; there is no need to press Stop. Recognition retries automatically after recoverable errors.
 
-An LLM interprets every voice or text input, chooses a genie or team action, and decides what reaches the work runtime. It receives the current roster/status and input, without loading genie histories. Uncertain destinations get a short clarification. Rust validates names, lifetime identities, approvals, and retirement confirmations.
+An LLM interprets every voice or text input and chooses its destination. Routing receives the current roster/status and recent reply context, without adding work requests to HR's conversation. Uncertain destinations get a short clarification. The HR manager has its own lifetime conversation and uses geniewish's tools to hire, retire, update roles, check messages, and delegate work. Rust validates names, lifetime identities, approvals, and retirement confirmations. Pure switches run immediately after interpretation.
 
 Examples:
 
@@ -29,7 +29,7 @@ Mike, any messages?
 Read Lucas's message
 ```
 
-Mike picks an available name; it may differ from Lucas on an existing team. Spoken replies use each genie's assigned installed Mac voice. Background results play a quiet chime. Asking a genie to stop talking interrupts playback. The Pause listening button is an optional microphone privacy control; Start listening resumes it. Neither command cancels work. A stopped result remains unread.
+You can combine actions: 'Mike, hire a product manager and ask them to draft a homepage plan.' Mike picks an available name; it may differ from Lucas on an existing team. Spoken replies use each genie's assigned installed Mac voice. Background results play a quiet chime. Asking a genie to stop talking interrupts playback. The Pause listening button is an optional microphone privacy control; Start listening resumes it. Neither command cancels work. A stopped result remains unread.
 
 The app uses on-device English recognition and refuses cloud fallback. Audio is not saved. Conversation text stays with the work runtime. The window shows this session's exchanges; the same saved lifetime conversations continue across restarts.
 
@@ -69,7 +69,7 @@ cargo run -- --help
 
 Requires Rust 1.93 or newer. Protocol tests also use `python3`.
 
-The text client remains a supported fallback. It and the native window's text field use the same Rust command handling as recognized speech. `cargo test` verifies routing, lifetime conversations, and delivery without a microphone. `--self-test` checks speech endpointing separately; actual recognition and interruption quality require microphone trials. The runtime protocol tests use canned interpretation decisions and do not evaluate model quality; separate live text trials exercise the real interpreter.
+The text client remains a supported fallback. It and the native window's text field use the same Rust command handling as recognized speech. `cargo test` verifies routing, lifetime conversations, and delivery without a microphone. `--self-test` checks speech endpointing separately; actual recognition and interruption quality require microphone trials. The runtime protocol tests use canned model decisions and tool requests to test identity preservation, failure handling, delegation, retirement consent, and delivery acknowledgements; they do not evaluate model quality. Separate live text trials exercise the real router and HR model. The local MCP adapter is embedded in the Rust executable and configured only on HR's thread, including when resuming an older saved conversation; it never edits global runtime configuration.
 
 For live work, install the Codex CLI and sign in, then run:
 
@@ -95,6 +95,10 @@ Mike, retire Allan
 Yes, retire Allan
 quit
 ```
+
+Final replies are plain prose and brief by default. Detailed reports go to `~/Desktop/geniewish`; the genie announces the filename after saving. Project source stays in its workspace. Use `--output-dir PATH` for another report folder. The HR manager has management and report tools; work genies keep their native project tools.
+
+Routing, HR, and work genies use your configured runtime model by default. Optional `--router-model MODEL`, `--hr-model MODEL`, and `--worker-model MODEL` select them independently in both clients. No smaller model is selected automatically; availability depends on your signed-in account.
 
 Roles are optional and stay blank until assigned. The manager picks an available name when none is given; a chosen name must be in the catalog. Roles can be updated or cleared later (`Mike, clear Allan's role`) in the same lifetime conversation.
 

@@ -5,11 +5,16 @@ import os
 from pathlib import Path
 import sys
 import re
+import socket
+import threading
+import time
 
 history = Path(os.environ['GENIEWISH_TEST_HISTORY'])
 mode = os.environ.get('GENIEWISH_TEST_MODE', '')
 state = json.loads(history.read_text()) if history.exists() else {'next': 1, 'threads': {}}
 pending = {}
+output_lock = threading.Lock()
+state_lock = threading.RLock()
 
 # Canned decisions exercise dispatch without model usage. This is not a production interpreter.
 def interpret(snapshot):
@@ -17,6 +22,7 @@ def interpret(snapshot):
     body = original.strip().rstrip('.?!')
     body = re.sub(r'^(hi|hello|hey) ', '', body, flags=re.I)
     target = None
+    if body=='hire Annie then ask her to reply': return {'action':'message','target':'Mike','name':None,'role':'','text':original}
     for prefix in ['i want to speak to ', 'i want to talk to ', 'talk to ', 'speak to ', 'switch to ', 'back to ']:
         if body.lower().startswith(prefix):
             body = body[len(prefix):]
@@ -55,11 +61,11 @@ def interpret(snapshot):
 
 
 def save():
-    history.write_text(json.dumps(state))
+    with state_lock: history.write_text(json.dumps(state))
 
 
 def send(message):
-    print(json.dumps(message), flush=True)
+    with output_lock: print(json.dumps(message), flush=True)
 
 
 def finish(thread, turn, text):
@@ -70,6 +76,55 @@ def finish(thread, turn, text):
     send({'method': 'item/completed', 'params': {'threadId': thread, 'turnId': turn, 'item': item}})
     send({'method': 'turn/completed', 'params': {'threadId': thread, 'turn': record}})
 
+
+def hr_call(thread, turn, text):
+    if text=='delayed hire': time.sleep(.25)
+    record = state['threads'][thread]
+    setup = record['hr_config']['args']
+    serial = 0
+    def tool(action, name=None, role='', text=''):
+        nonlocal serial
+        serial += 1
+        request = {'owner':int(setup[2]),'id':thread+'-'+turn+'-'+str(serial), 'tool':'manage_genies', 'arguments':{'action':action,'name':name,'role':role,'text':text}}
+        if mode == 'wrong-tool-owner': request['owner'] += 1
+        if mode != 'unassociated-tool': send({'method':'item/started','params':{'threadId':thread,'turnId':turn,'item':{'id':request['id'],'type':'mcpToolCall','server':'geniewish_hr','tool':request['tool'],'arguments':request['arguments']}}})
+        with socket.socket(socket.AF_UNIX) as peer:
+            peer.connect(setup[1]); peer.sendall((json.dumps(request)+'\n').encode())
+            result=json.loads(peer.makefile().readline())
+        if mode == 'replay-tool':
+            with socket.socket(socket.AF_UNIX) as peer:
+                peer.connect(setup[1]);peer.sendall((json.dumps(request)+'\n').encode())
+                assert json.loads(peer.makefile().readline())==result
+        state.setdefault('tool_results',[]).append(result); save()
+        content=result['content'][0]['text']
+        return result, json.loads(content) if not result['isError'] else content
+    catalog = ['Mike','Lucas','Annie','Ben','Clara','Allan','Oscar','Ruby','Zoe','Hugo']
+    decision = interpret({'input':text,'catalog':catalog})
+    if text=='delayed hire':
+        result,data=tool('hire');answer=data if result['isError'] else 'Hired a genie.'
+    elif text in ['yes', 'Yes, do not retire Annie']:
+        result,data=tool('confirm_retire','Annie');answer=data
+    elif text == 'hire Annie then ask her to reply':
+        result,data=tool('hire','Annie')
+        if not result['isError']: result,data=tool('message','Annie',text='please reply')
+        answer = data if result['isError'] else 'Delegated to Annie.'
+    elif text == 'try retiring without confirmation':
+        result,data=tool('confirm_retire','Annie');answer=data
+    elif text == 'ask me which genie to hire':
+        answer='Human, which name would you like?'
+    elif text == 'hire two genies':
+        result,data=tool('hire'); result,data=tool('hire');answer='Hired two genies.'
+    elif decision['action'] in ['hire','set_role','retire','confirm_retire','inbox','read','roster']:
+        result,data=tool(decision['action'],decision['name'],decision['role'])
+        if result['isError']: answer=data
+        elif decision['action']=='hire': answer='We hired '+data['result']['hired']+', Human.'
+        elif decision['action']=='retire': answer=data['result']['confirmation_required']
+        elif decision['action']=='confirm_retire': answer=data['result']['retired']+' is retired.'
+        elif decision['action']=='inbox': answer='You have '+str(data['team']['unread'])+' unread updates.'
+        elif decision['action']=='read': answer=data['result']['message']
+        else: answer='Updated the team, Human.'
+    else: answer='Mike here, Human.'
+    finish(thread,turn,answer)
 
 for line in sys.stdin:
     request = json.loads(line)
@@ -86,6 +141,7 @@ for line in sys.stdin:
         continue
     if identity is None:
         continue
+    after_response = None
     error = None
     result = {}
     if method == 'initialize':
@@ -103,11 +159,16 @@ for line in sys.stdin:
             state['routing_next'] = state.get('routing_next', 0) + 1
             thread = 'router-' + str(state['routing_next'])
         else:
-            assert params['sandbox'] == 'workspace-write'
+            manager = 'mcp_servers.geniewish_hr' in params['config']
+            assert params['sandbox'] == ('read-only' if manager else 'workspace-write')
+            if manager:
+                assert params['config']['features.shell_tool'] is False
+                assert params['config']['mcp_servers.geniewish_hr']['required'] is True
             assert 'Human' in params['developerInstructions']
             thread = 'thread-' + str(state['next'])
             state['next'] += 1
         state['threads'][thread] = {'id': thread, 'turns': [], 'ephemeral':routing}
+        if not routing and manager: state['threads'][thread]['hr_config']=params['config']['mcp_servers.geniewish_hr']
         result = {'thread': state['threads'][thread]}
         save()
     elif method == 'thread/unsubscribe':
@@ -119,6 +180,8 @@ for line in sys.stdin:
         if thread not in state['threads'] or (mode == 'fail-resume' and method == 'thread/resume'):
             error = {'code': -32600, 'message': 'thread not found'}
         else:
+            if method=='thread/resume' and 'mcp_servers.geniewish_hr' in params.get('config',{}):
+                state['threads'][thread]['hr_config']=params['config']['mcp_servers.geniewish_hr']
             result = {'thread': state['threads'][thread]}
     elif method == 'thread/delete':
         if mode == 'fail-delete':
@@ -148,6 +211,8 @@ for line in sys.stdin:
             snapshot = json.loads(text)
             state.setdefault('routing_inputs',[]).append(snapshot)
             finish(thread, turn, json.dumps(interpret(snapshot)))
+        elif state['threads'][thread].get('hr_config'):
+            after_response = lambda:hr_call(thread,turn,text)
         elif text == 'needs approval':
             approval = 'approval-' + thread
             pending[approval] = (thread, turn)
@@ -159,3 +224,5 @@ for line in sys.stdin:
     else:
         error = {'code': -32601, 'message': 'unsupported fixture method'}
     send({'id': identity, 'error': error} if error else {'id': identity, 'result': result})
+
+    if after_response: threading.Thread(target=after_response,daemon=True).start()

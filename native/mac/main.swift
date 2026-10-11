@@ -214,6 +214,9 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         core.executableURL = URL(fileURLWithPath: corePath)
         core.currentDirectoryURL = URL(fileURLWithPath: workspace)
         core.arguments = ["--live", "--ack-delivery", "--workspace", workspace, "--codex", codex]
+        for option in ["--router-model", "--hr-model", "--worker-model", "--output-dir"] {
+            if let value = argument(option) { core.arguments! += [option, value] }
+        }
         if let state = argument("--state-dir") { core.arguments! += ["--state-dir", state] }
         if let logs = Diagnostics.shared?.directory.path { core.arguments! += ["--log-dir", logs] }
         if CommandLine.arguments.contains("--debug-transcripts") { core.arguments!.append("--debug-transcripts") }
